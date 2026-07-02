@@ -142,3 +142,7 @@ expensive vision passes are paid once.
 - This is a personal research tool; source PDFs are not included (copyright + size).
 - Costs are dominated by the one-time vision pass at ingest; the disk cache makes
   subsequent re-indexing (e.g. changing `CHUNK_SIZE`) nearly free.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
