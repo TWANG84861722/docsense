@@ -1,0 +1,52 @@
+# ════════════════════════════════════════════════════════════
+#  模型 provider 配置 —— 一键换模型
+#  改下面的 active 即可：openai / claude / gemini / qwen / local
+#  （embedding 和 reranker 仍走本地，见 config.py，不在这里切换）
+# ════════════════════════════════════════════════════════════
+
+active: qwen
+
+# 可选：给 LLM 和 VL 分别指定不同 provider（留空 = 都用上面的 active）
+# 例：llm_override: claude  → 回答用 Claude，识图仍用 active 的 qwen
+llm_override:
+vl_override:
+
+# 各家都走 OpenAI 兼容接口，所以只用 openai 这一个库就够。
+# 切某家前，确认它的 api_key_env 已经在 .env / 环境变量里设好。
+providers:
+
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    chat_model: gpt-4o
+    vl_model: gpt-4o
+
+  claude:
+    base_url: https://api.anthropic.com/v1/
+    api_key_env: ANTHROPIC_API_KEY
+    chat_model: claude-sonnet-4-6
+    vl_model: claude-sonnet-4-6
+
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: GEMINI_API_KEY
+    chat_model: gemini-2.5-flash
+    vl_model: gemini-2.5-flash
+
+  qwen:
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    chat_model: qwen-plus            # 回答用；也可换 qwen-max / qwen-turbo
+    vl_model: qwen-vl-max            # 图片"理解"用。日常保持 plus 省 Max 额度；
+                                      # 要入库【图多的新论文】时临时改回 qwen-vl-max（质量明显更好），跑完再切回。
+                                      # 注：chat 走 chat_model(qwen-plus)，不碰 vl_model —— 日常对话不受这里影响。
+    ocr_model: qwen-vl-ocr            # 扫描页/表格"转录"专用：读字准、便宜、不烧 vl-max 额度
+                                      # （别的 provider 没配 ocr_model → 自动回退到 vl_model，不破坏一键换 provider）
+
+  local:
+    # 本地模式需先起一个 OpenAI 兼容服务，例如：
+    #   python -m mlx_lm.server --model /Users/taowang/models/Qwen3-8B-4bit --port 8080
+    base_url: http://localhost:8080/v1
+    api_key_env:                     # 本地不需要 key
+    chat_model: local-model
+    vl_model: local-model
