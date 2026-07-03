@@ -43,8 +43,7 @@ Rewritten question:"""
 
 logger = logging.getLogger(__name__)
 
-SYSTEM = """/no_think
-Use the retrieved evidence first.
+SYSTEM = """Use the retrieved evidence first.
 
 When answering, structure your response as:
 
@@ -81,7 +80,7 @@ def map_phase(question, chunks):
             text=chunk["text"],
         )
         messages = [
-            {"role": "user", "content": f"/no_think\n\n{prompt_text}"},
+            {"role": "user", "content": prompt_text},
         ]
         # 不再用 rerank 分数硬截断：每个 chunk 都交给 LLM 判"相不相关"。
         # 因为同质语料里相关 chunk 的分数本来就可能很低，硬截断会在 LLM 看到之前就把它误杀。
