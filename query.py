@@ -35,7 +35,10 @@ if not metadata_path.exists():
 logger.info(f"Embedder backend: {embedder.backend()}")
 
 logger.info("Loading reranker...")
-reranker = CrossEncoder(RERANKER_MODEL)
+# max_length=512：把每个 (query, doc) 对截断到 512 token。交叉编码器的标准做法，
+# 否则遇到超长 chunk(整页扫描/大图描述几千 token)，注意力矩阵 ~序列长² 会爆到几十 GiB、
+# 在 MPS/GPU 上直接 OOM（"Invalid buffer size"）。截断不影响排序质量。
+reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
 
 logger.info("Loading FAISS index...")
 index = faiss.read_index(str(index_path))
