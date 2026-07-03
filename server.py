@@ -12,9 +12,12 @@
 """
 import socket
 import logging
+import threading
+import time
+import uuid
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 import uvicorn
 
@@ -27,6 +30,11 @@ app = FastAPI()
 
 # 单用户个人工具：服务端保存一份全局对话历史(和终端 REPL 行为一致)。
 _history = []
+
+# 后台任务表：一次问答很慢(可能一分钟+)，若让手机一直挂着等，iOS fetch ~60s 会超时断掉。
+# 所以改成：提问 → 立刻返回 job_id → 手机每隔几秒轮询 /result。每次轮询都是瞬时返回，不会超时。
+_jobs = {}                 # job_id -> {status, answer, sources, standalone, error, started}
+_job_lock = threading.Lock()   # 模型/检索不保证线程安全 → 同一时刻只跑一个任务
 
 
 class Ask(BaseModel):
@@ -88,39 +96,60 @@ PAGE = """<!doctype html>
   <div id="sources"></div>
 
 <script>
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function render(d, q) {
+  if (d.standalone && d.standalone !== q)
+    document.getElementById('rewrite').textContent = '规整为英文检索 → ' + d.standalone;
+  document.getElementById('answer').textContent = d.answer || '(没找到相关内容)';
+  const box = document.getElementById('sources');
+  box.innerHTML = '';
+  (d.sources || []).forEach((s, i) => {
+    const div = document.createElement('div');
+    div.className = 'src';
+    let tag = s.type === 'figure' ? '<span class="tag">figure</span>'
+            : s.type === 'table'  ? '<span class="tag">table</span>' : '';
+    div.innerHTML = '[' + (i+1) + '] ' + s.paper + ' p.' + s.page +
+                    (s.section ? ' · ' + s.section : '') + tag +
+                    ' <span style="color:#999">(rerank=' + s.rerank.toFixed(3) + ')</span><br>' +
+                    '<span style="color:#888">' + s.snippet + '…</span>';
+    box.appendChild(div);
+  });
+}
+
 async function ask() {
   const q = document.getElementById('q').value.trim();
   if (!q) return;
   const btn = document.getElementById('ask');
+  const ans = document.getElementById('answer');
   btn.disabled = true;
   document.getElementById('rewrite').textContent = '';
   document.getElementById('sources').innerHTML = '';
-  document.getElementById('answer').innerHTML = '<span class="spin">🤔 检索+作答中，可能要十几秒到一分钟…</span>';
+  ans.innerHTML = '<span class="spin">🤔 检索+作答中…</span>';
   try {
+    // 1) 提交任务，立刻拿到 job_id（这一步很快，不会超时）
     const r = await fetch('/ask', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({question: q})
     });
-    const d = await r.json();
-    if (d.error) { document.getElementById('answer').textContent = '出错：' + d.error; return; }
-    if (d.standalone && d.standalone !== q)
-      document.getElementById('rewrite').textContent = '规整为英文检索 → ' + d.standalone;
-    document.getElementById('answer').textContent = d.answer || '(没找到相关内容)';
-    const box = document.getElementById('sources');
-    (d.sources || []).forEach((s, i) => {
-      const div = document.createElement('div');
-      div.className = 'src';
-      let tag = s.type === 'figure' ? '<span class="tag">figure</span>'
-              : s.type === 'table'  ? '<span class="tag">table</span>' : '';
-      div.innerHTML = '[' + (i+1) + '] ' + s.paper + ' p.' + s.page +
-                      (s.section ? ' · ' + s.section : '') + tag +
-                      ' <span style="color:#999">(rerank=' + s.rerank.toFixed(3) + ')</span><br>' +
-                      '<span style="color:#888">' + s.snippet + '…</span>';
-      box.appendChild(div);
-    });
-    document.getElementById('q').value = '';
+    const j = await r.json();
+    if (j.error || !j.job_id) { ans.textContent = '出错：' + (j.error || '未拿到任务号'); return; }
+    // 2) 每 1.5s 轮询一次，直到 done/error（每次轮询都是瞬时返回，永不超时）
+    while (true) {
+      await sleep(1500);
+      const rr = await fetch('/result/' + j.job_id);
+      const d = await rr.json();
+      if (d.status === 'running') {
+        ans.innerHTML = '<span class="spin">🤔 检索+作答中… 已 ' + d.elapsed + ' 秒</span>';
+        continue;
+      }
+      if (d.status === 'error') { ans.textContent = '出错：' + d.error; return; }
+      render(d, q);                       // done
+      document.getElementById('q').value = '';
+      return;
+    }
   } catch (e) {
-    document.getElementById('answer').textContent = '请求失败：' + e;
+    ans.textContent = '请求失败：' + e;
   } finally {
     btn.disabled = false;
   }
@@ -141,43 +170,74 @@ def home():
     return PAGE
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)      # 浏览器要小图标；给个空响应，省得日志刷 404
+
+
 @app.post("/reset")
 def reset():
     _history.clear()
     return {"ok": True}
 
 
+def _run_job(job_id, question):
+    """后台线程：真正的耗时活(condense + map_reduce)，结果写回 _jobs[job_id]。"""
+    with _job_lock:                       # 一次只跑一个：模型/检索非线程安全
+        try:
+            standalone = chat.condense_question(question, _history)
+            answer, sources = chat.map_reduce(standalone)
+
+            _history.append({"role": "user", "content": question})
+            _history.append({"role": "assistant", "content": answer})
+            if len(_history) > MAX_HISTORY_TURNS * 2:
+                del _history[:-(MAX_HISTORY_TURNS * 2)]
+
+            _jobs[job_id].update(
+                status="done",
+                standalone=standalone,
+                answer=answer,
+                sources=[
+                    {
+                        "paper": s["paper"], "page": s["page"],
+                        "section": (s.get("section") or "").strip(),
+                        "type": s.get("type", "text"),
+                        "rerank": float(s.get("rerank_score", 0)),
+                        "snippet": s["text"][:120].replace("\n", " ").strip(),
+                    }
+                    for s in sources
+                ],
+            )
+        except Exception as e:
+            logging.exception("job failed")
+            _jobs[job_id].update(status="error", error=str(e))
+
+
 @app.post("/ask")
 def ask(req: Ask):
+    """立刻返回 job_id；活儿丢到后台线程，手机去轮询 /result/<job_id>。"""
     question = req.question.strip()
     if not question:
         return JSONResponse({"error": "empty question"})
-    try:
-        standalone = chat.condense_question(question, _history)
-        answer, sources = chat.map_reduce(standalone)
-    except Exception as e:
-        logging.exception("ask failed")
-        return JSONResponse({"error": str(e)})
+    job_id = uuid.uuid4().hex
+    _jobs[job_id] = {"status": "running", "started": time.time()}
+    threading.Thread(target=_run_job, args=(job_id, question), daemon=True).start()
+    return {"job_id": job_id}
 
-    _history.append({"role": "user", "content": question})
-    _history.append({"role": "assistant", "content": answer})
-    if len(_history) > MAX_HISTORY_TURNS * 2:
-        del _history[:-(MAX_HISTORY_TURNS * 2)]
 
-    return {
-        "answer": answer,
-        "standalone": standalone,
-        "sources": [
-            {
-                "paper": s["paper"], "page": s["page"],
-                "section": (s.get("section") or "").strip(),
-                "type": s.get("type", "text"),
-                "rerank": float(s.get("rerank_score", 0)),
-                "snippet": s["text"][:120].replace("\n", " ").strip(),
-            }
-            for s in sources
-        ],
-    }
+@app.get("/result/{job_id}")
+def result(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        return JSONResponse({"status": "error", "error": "unknown job"})
+    out = {"status": job["status"], "elapsed": round(time.time() - job["started"])}
+    if job["status"] == "done":
+        out.update(answer=job["answer"], standalone=job["standalone"], sources=job["sources"])
+        _jobs.pop(job_id, None)           # 取走即清，别攒内存
+    elif job["status"] == "error":
+        out["error"] = job.get("error", "unknown")
+        _jobs.pop(job_id, None)
+    return out
 
 
 if __name__ == "__main__":
