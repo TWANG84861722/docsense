@@ -39,3 +39,8 @@ PyYAML==6.0.3
 # 可选：基因别名扩展（hgnc.py）。不装则 expand_query 优雅跳过；
 # 装了首次会联网 MyGene 建缓存；已有 db/gene_aliases.json 时无需再装。
 # mygene==3.2.2
+
+# 可选：语音提问（voice.py，chat.py 里输入 v 触发）。
+# sounddevice 录音(跨平台) + mlx-whisper 本地转写(仅 Apple Silicon，首次下 Whisper 模型 ~1.6G)。
+# sounddevice==0.5.5
+# mlx-whisper==0.4.3; platform_system == "Darwin" and platform_machine == "arm64"

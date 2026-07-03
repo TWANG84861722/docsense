@@ -5,7 +5,7 @@ import config
 from config import MAX_HISTORY_TURNS, MAX_TOKENS
 import model_client
 
-EARLY_STOP_MISSES = 3   # 连续多少个 chunk 被 LLM 判 NONE 就停止本轮 map（现在是唯一的停止机制）
+EARLY_STOP_MISSES = 5   # 连续多少个 chunk 被 LLM 判 NONE 就停止本轮 map（现在是唯一的停止机制）
 
 MAP_PROMPT_TMPL = """Does the following text excerpt directly answer or explicitly address the question?
 
@@ -169,13 +169,21 @@ def main():
     history = []
     while True:
         try:
-            question = input("\nQuestion: ")
+            question = input("\nQuestion (或输入 v 语音提问): ")
         except (EOFError, KeyboardInterrupt):
             print("\nBye.")
             break
 
         if question.lower() in ["exit", "quit"]:
             break
+        if question.strip().lower() in ("v", "voice"):     # 语音提问：录音 → Whisper 转文字
+            try:
+                import voice
+                question = voice.listen()
+                print(f"🗣  你说: {question}")
+            except Exception as e:
+                print(f"语音不可用（需 Apple Silicon + mlx-whisper）: {e}")
+                continue
         if not question.strip():
             continue
 

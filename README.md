@@ -97,6 +97,13 @@ Question: What chromosome is LGMD linked to?
 [answer, grounded in the retrieved papers, with a Sources list]
 ```
 
+Questions can be asked in **any language** — they are normalized to an English query for retrieval
+(the corpus is English), while the answer stays English.
+
+**Voice input (optional, Apple Silicon):** `pip install sounddevice mlx-whisper`, then type `v` at the
+prompt to ask by speaking. Speech (any language) is transcribed locally with Whisper (MLX), then
+normalized to an English query. First use downloads the Whisper model (~1.6 GB).
+
 ## Configuration
 
 - **`models.yaml`** — pick the provider/models. Set `active` to `qwen` / `openai` /
