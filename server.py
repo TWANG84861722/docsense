@@ -73,7 +73,8 @@ PAGE = """<!doctype html>
   button.ghost { background: #6b7280; }
   button:disabled { opacity: .5; }
   #hint { color: #888; font-size: 13px; margin: 6px 2px; }
-  #rewrite { color: #888; font-size: 13px; margin: 12px 2px 0; }
+  #asked { font-weight: 600; margin: 16px 2px 2px; }
+  #rewrite { color: #888; font-size: 13px; margin: 4px 2px 0; }
   #answer { white-space: pre-wrap; margin-top: 14px; padding: 14px;
             border: 1px solid #ddd; border-radius: 10px; min-height: 40px; }
   #sources { margin-top: 14px; }
@@ -84,13 +85,14 @@ PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-  <h1>📚 docsense — 问你的论文库</h1>
-  <textarea id="q" placeholder="打字，或点键盘上的🎤用语音输入（中文/英文都行）…"></textarea>
-  <div id="hint">提示：手机键盘的语音输入对中文更准。答案用英文，问题什么语言都行。</div>
+  <h1>📚 docsense — ask your library</h1>
+  <textarea id="q" placeholder="Type, or tap 🎤 on the keyboard to speak (any language)…"></textarea>
+  <div id="hint">Tip: use the keyboard's dictation for voice. Ask in any language — answers are in English.</div>
   <div class="row">
-    <button id="ask" onclick="ask()">提问</button>
-    <button class="ghost" onclick="reset()">清空对话</button>
+    <button id="ask" onclick="ask()">Ask</button>
+    <button class="ghost" onclick="reset()">New topic</button>
   </div>
+  <div id="asked"></div>
   <div id="rewrite"></div>
   <div id="answer"></div>
   <div id="sources"></div>
@@ -100,8 +102,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function render(d, q) {
   if (d.standalone && d.standalone !== q)
-    document.getElementById('rewrite').textContent = '规整为英文检索 → ' + d.standalone;
-  document.getElementById('answer').textContent = d.answer || '(没找到相关内容)';
+    document.getElementById('rewrite').textContent = 'Search query → ' + d.standalone;
+  document.getElementById('answer').textContent = d.answer || '(nothing relevant found)';
   const box = document.getElementById('sources');
   box.innerHTML = '';
   (d.sources || []).forEach((s, i) => {
@@ -123,9 +125,10 @@ async function ask() {
   const btn = document.getElementById('ask');
   const ans = document.getElementById('answer');
   btn.disabled = true;
+  document.getElementById('asked').textContent = 'Q: ' + q;   // 问题留在答案上方，问完不消失
   document.getElementById('rewrite').textContent = '';
   document.getElementById('sources').innerHTML = '';
-  ans.innerHTML = '<span class="spin">🤔 检索+作答中…</span>';
+  ans.innerHTML = '<span class="spin">🤔 Searching & answering…</span>';
   try {
     // 1) 提交任务，立刻拿到 job_id（这一步很快，不会超时）
     const r = await fetch('/ask', {
@@ -133,29 +136,30 @@ async function ask() {
       body: JSON.stringify({question: q})
     });
     const j = await r.json();
-    if (j.error || !j.job_id) { ans.textContent = '出错：' + (j.error || '未拿到任务号'); return; }
+    if (j.error || !j.job_id) { ans.textContent = 'Error: ' + (j.error || 'no job id'); return; }
     // 2) 每 1.5s 轮询一次，直到 done/error（每次轮询都是瞬时返回，永不超时）
     while (true) {
       await sleep(1500);
       const rr = await fetch('/result/' + j.job_id);
       const d = await rr.json();
       if (d.status === 'running') {
-        ans.innerHTML = '<span class="spin">🤔 检索+作答中… 已 ' + d.elapsed + ' 秒</span>';
+        ans.innerHTML = '<span class="spin">🤔 Searching & answering… ' + d.elapsed + 's</span>';
         continue;
       }
-      if (d.status === 'error') { ans.textContent = '出错：' + d.error; return; }
+      if (d.status === 'error') { ans.textContent = 'Error: ' + d.error; return; }
       render(d, q);                       // done
       document.getElementById('q').value = '';
       return;
     }
   } catch (e) {
-    ans.textContent = '请求失败：' + e;
+    ans.textContent = 'Request failed: ' + e;
   } finally {
     btn.disabled = false;
   }
 }
 async function reset() {
   await fetch('/reset', {method: 'POST'});
+  document.getElementById('asked').textContent = '';
   document.getElementById('rewrite').textContent = '';
   document.getElementById('answer').textContent = '';
   document.getElementById('sources').innerHTML = '';
