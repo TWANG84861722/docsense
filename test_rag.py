@@ -18,11 +18,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 class TestConfig(unittest.TestCase):
 
     def test_values_are_sensible(self):
-        from config import CHUNK_SIZE, CHUNK_OVERLAP, CANDIDATE_K, MIN_K, BATCH_SIZE
+        from config import CHUNK_SIZE, CHUNK_OVERLAP, CANDIDATE_K, BATCH_SIZE
         self.assertGreater(CHUNK_SIZE, 0)
         self.assertGreater(CHUNK_OVERLAP, 0)
         self.assertLess(CHUNK_OVERLAP, CHUNK_SIZE)
-        self.assertGreater(CANDIDATE_K, MIN_K)
+        self.assertGreater(CANDIDATE_K, 0)
         self.assertGreater(BATCH_SIZE, 0)
 
     def test_model_paths_exist(self):

@@ -10,7 +10,6 @@ from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 from hgnc import expand_query
 
-import config
 import embedder
 from config import (
     DB_DIR, RERANKER_MODEL,

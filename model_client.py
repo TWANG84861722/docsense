@@ -159,10 +159,3 @@ def vl_found_nothing(text: str) -> bool:
     """判断 VL 回答是不是"这张图里没图/没表"（区域取错时会这么回）。"""
     t = (text or "").lower()[:200]
     return any(p in t for p in _VL_NOTHING)
-
-
-def active_summary() -> str:
-    """调试用：打印当前生效的 provider/模型。"""
-    cn, _, cm = _resolve("chat")
-    vn, _, vm = _resolve("vl")
-    return f"chat → {cn}:{cm} | vl → {vn}:{vm}"

@@ -1,15 +1,17 @@
 """PDF 解析：parse_pdf（主入口，在最上面）+ 它用到的零件（在下面）。
 
 从上往下读（高层在前、细节在后，即 stepdown / 报纸式结构）：
-  parse_pdf(一篇PDF)        ← 主入口：逐页拆段 + 抽图注识图，汇成 elements
+  parse_pdf(一篇PDF)          ← 主入口：逐页拆段 + 抽图/表 + 识图，汇成 elements
      ↓ 用到
-  page_segments(一页)       ← 把一页按版面从上到下切成 (text/table, 章节, 文字)
-  parse_scanned_page        ← 扫描页(无文字层)：整页渲染 → VL 转 markdown
-  extract_figure_captions   ← 找出 "Figure N" 图注
-  describe_figure           ← 渲染图片区域 + 调 VL 识图（Tier 0：裁切图注上方）
-  describe_figure_fullpage  ← 裁切失败时的兜底：整页渲染，让 VL 找出该图注对应的图
-  table_to_markdown         ← 表格 → Markdown
-  bbox_overlap              ← 判断两个矩形框重不重叠
+  page_segments               ← 把一页按版面切成 (text/table, 章节, 文字)
+  _bordered_tables            ← find_tables 找有边框表（page_segments/parse_pdf 共用）
+  parse_scanned_page          ← 扫描页(无文字层)：整页渲染 → VL 转 markdown
+  extract_figure_captions     ← 找出 "Figure N" 图注
+  describe_figure/_fullpage   ← 渲染图片 → VL 识图（Tier0 裁切图注上方 / 兜底整页找图）
+  extract_table_captions      ← 找出 "Table N" 表注
+  extract_table_via_vl        ← 无边框表：VL 从表注下/上方读成 Markdown（_table_region/_vl_read_table）
+  table_to_markdown           ← 有边框表对象 → Markdown
+  bbox_overlap / is_references ← 小工具
 """
 from collections import Counter
 import logging

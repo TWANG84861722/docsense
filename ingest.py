@@ -2,14 +2,12 @@ import bisect
 import hashlib
 import logging
 import json
-from pathlib import Path
 
 import faiss
 import numpy as np
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-import config
 from config import (
     DATA_DIR, DB_DIR,
     CHUNK_SIZE, CHUNK_OVERLAP, BATCH_SIZE,
@@ -128,11 +126,6 @@ def main():
 # ════════════════════════════════════════════════════════════
 #  main() 用到的零件
 # ════════════════════════════════════════════════════════════
-
-def doc_title(paper):
-    """文件名(去后缀) → 干净的文档标题，如 "入职流程"/"2020 Perrin ..."。拼进 embedding 用。"""
-    return Path(paper).stem.replace("_", " ").replace("-", " ").strip()
-
 
 def build_chunks(paper, elements):
     """elements → 最终 chunks。

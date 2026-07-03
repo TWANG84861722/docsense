@@ -5,7 +5,7 @@ import config
 from config import MAX_HISTORY_TURNS, MAX_TOKENS
 import model_client
 
-EARLY_STOP_MISSES = 3   # 连续多少个 chunk 被 LLM 判 NONE 就停止本页 map（现在是唯一的停止机制）
+EARLY_STOP_MISSES = 3   # 连续多少个 chunk 被 LLM 判 NONE 就停止本轮 map（现在是唯一的停止机制）
 
 MAP_PROMPT_TMPL = """Does the following text excerpt directly answer or explicitly address the question?
 

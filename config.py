@@ -38,10 +38,6 @@ def _active(role: str) -> dict:
     name = override or MODELS["active"]
     return name, MODELS["providers"][name]
 
-# 向后兼容：旧代码若 import 这两个名字仍可用（取当前 active 的模型名）。
-LLM_MODEL = _active("chat")[1]["chat_model"]
-VL_MODEL  = _active("vl")[1]["vl_model"]
-
 def ocr_model() -> str:
     """扫描页/表格“转录”用的 OCR 模型名。
 
@@ -62,7 +58,7 @@ BATCH_SIZE    = 64
 DB_DIR = Path(f"index_chunk{CHUNK_SIZE}")
 
 # ── Retrieval ───────────────────────────────────────────────
-CANDIDATE_K = 100      # 每页取多少候选送进 rerank（也是"召回窗口"大小）
+CANDIDATE_K = 100      # 每轮每路(FAISS/BM25)各取多少 → 并集 rerank；也是"续取阈值"
 
 # ── Chat ────────────────────────────────────────────────────
 MAX_HISTORY_TURNS = 10

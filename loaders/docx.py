@@ -11,8 +11,7 @@ def _docx_table_md(table):
 
 def parse_docx(path):
     """解析 Word(.docx) → elements。
-    段落→text（标题样式当 section）；表格→table（Markdown）。
-    注：内嵌图片 v1 暂不识图，需要时再加 model_client.describe_image。
+    段落→text（标题样式当 section）；表格→table（Markdown）；内嵌图片→VL 识图（image_elements）。
     """
     from docx import Document
     from docx.text.paragraph import Paragraph
