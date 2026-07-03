@@ -21,7 +21,7 @@ import fitz
 
 import config
 import model_client
-from .common import is_table_caption, table_label
+from .common import is_table_caption, table_label, _rows_to_md
 
 logger = logging.getLogger(__name__)
 
@@ -549,17 +549,8 @@ def extract_table_via_vl(page, caption_bbox, bottom_y, top_y):
 
 def table_to_markdown(table):
     # 接收: 一个 PyMuPDF 检测到的表格对象   输出: Markdown 表格字符串
-    rows = table.extract()                     # .extract() → 二维列表（每行的每个格子）
-    if not rows:
-        return ""
-    lines = []
-    header = [str(c or "").strip() for c in rows[0]]      # 第一行当表头（None→""）
-    lines.append("| " + " | ".join(header) + " |")
-    lines.append("| " + " | ".join(["---"] * len(header)) + " |")   # Markdown 必需的分隔线
-    for row in rows[1:]:                       # 其余数据行
-        cells = [str(c or "").strip() for c in row]
-        lines.append("| " + " | ".join(cells) + " |")
-    return "\n".join(lines)
+    # .extract() → 二维列表；委托给 common._rows_to_md（补齐参差行、单元格内换行换空格，比手写健壮，且和 office 表共用一套）
+    return _rows_to_md(table.extract())
 
 
 def bbox_overlap(a, b):
