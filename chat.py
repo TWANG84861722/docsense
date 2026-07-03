@@ -5,8 +5,7 @@ import config
 from config import MAX_HISTORY_TURNS, MAX_TOKENS
 import model_client
 
-EARLY_STOP_MISSES = 3   # consecutive misses before stopping map phase
-MIN_RERANK_SCORE  = 0.1  # chunks below this are counted as miss without LLM call
+EARLY_STOP_MISSES = 3   # 连续多少个 chunk 被 LLM 判 NONE 就停止本页 map（现在是唯一的停止机制）
 
 MAP_PROMPT_TMPL = """Does the following text excerpt directly answer or explicitly address the question?
 
@@ -80,11 +79,9 @@ def map_phase(question, chunks):
         messages = [
             {"role": "user", "content": f"/no_think\n\n{prompt_text}"},
         ]
-        score = chunk.get("rerank_score", 0)
-        if score < MIN_RERANK_SCORE:
-            result = "NONE"
-        else:
-            result = model_client.chat(messages, max_tokens=150).strip()
+        # 不再用 rerank 分数硬截断：每个 chunk 都交给 LLM 判"相不相关"。
+        # 因为同质语料里相关 chunk 的分数本来就可能很低，硬截断会在 LLM 看到之前就把它误杀。
+        result = model_client.chat(messages, max_tokens=150).strip()
 
         if result and result != "NONE":
             extractions.append(result)
@@ -93,8 +90,7 @@ def map_phase(question, chunks):
             print(f"    chunk {i+1}/{len(chunks)}  found   (rerank={chunk.get('rerank_score', 0):.3f})")
         else:
             consecutive_misses += 1
-            reason = "low score" if score < MIN_RERANK_SCORE else "NONE"
-            print(f"    chunk {i+1}/{len(chunks)}  skip [{reason}]  (rerank={score:.3f})  misses={consecutive_misses}")
+            print(f"    chunk {i+1}/{len(chunks)}  skip [LLM:NONE]  (rerank={chunk.get('rerank_score', 0):.3f})  misses={consecutive_misses}")
             if consecutive_misses >= EARLY_STOP_MISSES:
                 print(f"    Early stop.")
                 return extractions, sources, True
