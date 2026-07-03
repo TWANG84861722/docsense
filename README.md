@@ -1,4 +1,4 @@
-# mlx_rag
+# docsense
 
 A local, multimodal Retrieval-Augmented Generation (RAG) system for a personal
 scientific-literature library. It parses PDFs and Office files — **including figures,
