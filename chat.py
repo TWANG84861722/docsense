@@ -1,6 +1,6 @@
 import logging
 
-from query import retrieve_page
+from query import retrieve_rounds
 import config
 from config import MAX_HISTORY_TURNS, MAX_TOKENS
 import model_client
@@ -63,7 +63,11 @@ Do not fabricate facts.
 """
 
 def map_phase(question, chunks):
-    """Run map step on a list of chunks. Returns (extractions, sources, early_stopped)."""
+    """Run map step. Returns (extractions, sources, examined).
+
+    examined = 这一轮实际看了多少个 chunk（早停时=停的位置，没停时=整批大小）。
+    上层用它判断"是否翻过前 CANDIDATE_K 还没停"来决定要不要再加深一轮。
+    """
     extractions = []
     sources = []
     consecutive_misses = 0
@@ -93,35 +97,28 @@ def map_phase(question, chunks):
             print(f"    chunk {i+1}/{len(chunks)}  skip [LLM:NONE]  (rerank={chunk.get('rerank_score', 0):.3f})  misses={consecutive_misses}")
             if consecutive_misses >= EARLY_STOP_MISSES:
                 print(f"    Early stop.")
-                return extractions, sources, True
+                return extractions, sources, i + 1      # examined = 停在这，看了 i+1 个
 
-    return extractions, sources, False
+    return extractions, sources, len(chunks)            # 整批看完都没停
 
 
 def map_reduce(question):
     all_extractions = []
     all_sources = []
-    offset = 0
-    page = 0
 
-    while True:
-        page += 1
-        chunks = retrieve_page(question, offset=offset)
-        if not chunks:
-            break
-
+    for round_idx, chunks in enumerate(retrieve_rounds(question), 1):
         scores = [c["rerank_score"] for c in chunks]
-        print(f"\n[Page {page} — RRF rank {offset+1}–{offset+len(chunks)} (FAISS+BM25, pre-rerank) → reranked here]"
+        print(f"\n[Round {round_idx} — {len(chunks)} candidates (FAISS+BM25 union → reranked)]"
               f"  rerank: max={max(scores):.3f}  median={sorted(scores)[len(scores)//2]:.3f}  min={min(scores):.3f}")
-        extractions, sources, early_stopped = map_phase(question, chunks)
+        extractions, sources, examined = map_phase(question, chunks)
         all_extractions.extend(extractions)
         all_sources.extend(sources)
-        offset += len(chunks)
 
-        if early_stopped:
+        # 续取规则：这一轮"翻过前 CANDIDATE_K 个还没停"(examined > K) → 货多，再加深一轮；
+        # 早早就停(examined ≤ K) → 收工。
+        if examined <= config.CANDIDATE_K:
             break
-
-        print(f"[No early stop in page {page} — fetching next {config.CANDIDATE_K} chunks...]")
+        print(f"[Round {round_idx} 翻过 {config.CANDIDATE_K} 仍高产(examined={examined}) → 再取下一轮]")
 
     if not all_extractions:
         return "No relevant information found.", []

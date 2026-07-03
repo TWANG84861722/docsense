@@ -80,50 +80,48 @@ logger.info(f"Index ready — {index.ntotal} vectors, {len(metadata)} chunks")
 
 
 # ----------------------------
-# 混合检索：向量 + BM25 → RRF 融合
+# 混合检索：FAISS + BM25 → 完整并集 → rerank（逐轮加深）
 # ----------------------------
 
-def _hybrid_fuse(question, pool):
-    """向量检索 + BM25 检索 → RRF 融合 → 返回前 pool 个 chunk 的下标。
+MAX_ROUNDS = 5   # 最多加深几轮（每轮两路各再取 CANDIDATE_K）。安全上限，防止无限翻页。
 
-    向量管语义、BM25 管精确词/字面区分；RRF 把两路排名公平地合成一个。
-    """
+
+def _ranked_indices(question, depth):
+    """算出 FAISS 和 BM25 各自的前 depth 名 chunk 下标（各按自己的相关度排序）。"""
     expanded = expand_query(question)
-
-    # 向量路（query 和 doc 现在都是纯正文，对称）
     qv = embedder.embed([expanded])
     faiss.normalize_L2(qv)
-    _, I = index.search(qv, pool)
-    vec_ranked = [int(i) for i in I[0] if i >= 0]
-
-    # BM25 路
+    _, I = index.search(qv, depth)
+    faiss_ranked = [int(i) for i in I[0] if i >= 0]
     bm25_scores = bm25.get_scores(_tok(expanded))
-    bm25_ranked = [int(i) for i in np.argsort(bm25_scores)[::-1][:pool]]
-
-    # RRF 融合：score = Σ 1/(k + 名次)，k=60
-    rrf = {}
-    for ranks in (vec_ranked, bm25_ranked):
-        for r, idx in enumerate(ranks):
-            rrf[idx] = rrf.get(idx, 0.0) + 1.0 / (60 + r)
-    return sorted(rrf, key=lambda i: rrf[i], reverse=True)[:pool]
+    bm25_ranked = [int(i) for i in np.argsort(bm25_scores)[::-1][:depth]]
+    return faiss_ranked, bm25_ranked
 
 
-def retrieve_page(question, offset, page_size=None):
-    """取融合排名里 [offset : offset+page_size] 这一页，再 rerank。
+def retrieve_rounds(question, k=None):
+    """逐轮产出候选（生成器）。上层用 next() 决定要不要再加深一轮。
 
-    chat.py 的 map_reduce 靠它分页取候选；融合排名只算一次成本不高。
+    第 r 轮 = FAISS[r*k:(r+1)*k] ∪ BM25[r*k:(r+1)*k] 的【完整并集】(去重，含跨轮去重)，
+    整批 rerank 后按相关度产出（最多 2*k 个/轮）。
+    不做 RRF 截断——两路各取的 k 个一个不扔，全交给 rerank 排序，这样 BM25(或 FAISS)
+    深处的相关 chunk 不会被"融合后只取前 K"挤掉。
     """
-    if page_size is None:
-        page_size = CANDIDATE_K
-
-    fused = _hybrid_fuse(question, offset + page_size)
-    page = fused[offset : offset + page_size]
-    candidates = [metadata[i] for i in page]
-    if not candidates:
-        return []
-
-    pairs = [[question, _rerank_text(c)] for c in candidates]
-    rerank_scores = reranker.predict(pairs)
-    ranked = sorted(zip(rerank_scores, candidates), key=lambda x: x[0], reverse=True)
-    logger.info(f"retrieve_page(offset={offset}, size={len(ranked)})")
-    return [{"rerank_score": float(s), **c} for s, c in ranked]
+    if k is None:
+        k = CANDIDATE_K
+    faiss_ranked, bm25_ranked = _ranked_indices(question, k * MAX_ROUNDS)
+    seen = set()
+    for r in range(MAX_ROUNDS):
+        lo, hi = r * k, (r + 1) * k
+        idxs = []
+        for i in faiss_ranked[lo:hi] + bm25_ranked[lo:hi]:   # 两路本段的并集
+            if i not in seen:                                 # 轮内 + 跨轮去重
+                seen.add(i)
+                idxs.append(i)
+        if not idxs:
+            return
+        candidates = [metadata[i] for i in idxs]
+        pairs = [[question, _rerank_text(c)] for c in candidates]
+        rerank_scores = reranker.predict(pairs)
+        ranked = sorted(zip(rerank_scores, candidates), key=lambda x: x[0], reverse=True)
+        logger.info(f"retrieve round {r + 1}: {len(ranked)} candidates (FAISS+BM25 union, reranked)")
+        yield [{"rerank_score": float(s), **c} for s, c in ranked]
