@@ -107,11 +107,26 @@ Questions can be asked in **any language** — they are normalized to an English
 prompt to ask by speaking. Speech (any language) is transcribed locally with Whisper (MLX), then
 normalized to an English query. First use downloads the Whisper model (~1.6 GB).
 
-**Ask from your phone (optional, same Wi-Fi):** `pip install fastapi uvicorn`, then run `python server.py`
-on the machine that holds the index. It prints a `http://<LAN-IP>:8000` URL — open it in your phone's
-browser (same Wi-Fi) to get an input box + answer view. Use the phone keyboard's built-in dictation for
-voice. The service has no auth and binds to the LAN only — use it on a trusted home network, don't expose
-port 8000 to the internet.
+## Ask from your phone (optional)
+
+`server.py` exposes the same index as a small web app, so you can ask from your phone's browser — handy
+for reading away from the desk, and the phone keyboard's dictation transcribes speech (any language)
+better than the desktop Whisper path.
+
+```bash
+pip install fastapi uvicorn
+python server.py            # run on the machine that holds the index
+```
+
+It prints a `http://<LAN-IP>:8000` URL. On a phone **connected to the same Wi-Fi**, open that URL to get
+an input box + answer view — showing the question asked, the English search query it was normalized to,
+the answer, and its sources. The heavy work (embeddings, reranking, LLM) all runs on the computer; the
+phone is just a thin client, so the computer must be on and running `server.py`. A slow query won't time
+out: the page submits the question and polls for the result in the background. Tap **New topic** to clear
+the conversation memory before switching to an unrelated question.
+
+> **Security:** the service has no authentication and binds to your LAN only. Use it on a trusted home
+> network — don't port-forward or otherwise expose port 8000 to the internet.
 
 ## Configuration
 
