@@ -5,7 +5,8 @@ import config
 from config import MAX_HISTORY_TURNS, MAX_TOKENS
 import model_client
 
-EARLY_STOP_MISSES = 5   # 连续多少个 chunk 被 LLM 判 NONE 就停止本轮 map（现在是唯一的停止机制）
+EARLY_STOP_MISSES = 5   # How many consecutive chunks the LLM judges NONE before stopping this
+                        # round's map (currently the only stopping mechanism).
 
 MAP_PROMPT_TMPL = """Does the following text excerpt directly answer or explicitly address the question?
 
@@ -69,8 +70,9 @@ Do not fabricate facts.
 def map_phase(question, chunks):
     """Run map step. Returns (extractions, sources, examined).
 
-    examined = 这一轮实际看了多少个 chunk（早停时=停的位置，没停时=整批大小）。
-    上层用它判断"是否翻过前 CANDIDATE_K 还没停"来决定要不要再加深一轮。
+    examined = how many chunks this round actually looked at (on early stop = where it stopped;
+    otherwise = the full batch size). The caller uses it to judge "did we page past the first
+    CANDIDATE_K without stopping" and thus whether to deepen by another round.
     """
     extractions = []
     sources = []
@@ -87,8 +89,9 @@ def map_phase(question, chunks):
         messages = [
             {"role": "user", "content": prompt_text},
         ]
-        # 不再用 rerank 分数硬截断：每个 chunk 都交给 LLM 判"相不相关"。
-        # 因为同质语料里相关 chunk 的分数本来就可能很低，硬截断会在 LLM 看到之前就把它误杀。
+        # No longer hard-cutting by rerank score: every chunk is handed to the LLM to judge
+        # "relevant or not". In a homogeneous corpus a relevant chunk's score can be quite low,
+        # so a hard cut would kill it off before the LLM ever sees it.
         result = model_client.chat(messages, max_tokens=150).strip()
 
         if result and result != "NONE":
@@ -101,9 +104,9 @@ def map_phase(question, chunks):
             print(f"    chunk {i+1}/{len(chunks)}  skip [LLM:NONE]  (rerank={chunk.get('rerank_score', 0):.3f})  misses={consecutive_misses}")
             if consecutive_misses >= EARLY_STOP_MISSES:
                 print(f"    Early stop.")
-                return extractions, sources, i + 1      # examined = 停在这，看了 i+1 个
+                return extractions, sources, i + 1      # examined = stopped here, looked at i+1
 
-    return extractions, sources, len(chunks)            # 整批看完都没停
+    return extractions, sources, len(chunks)            # went through the whole batch without stopping
 
 
 def map_reduce(question):
@@ -118,11 +121,12 @@ def map_reduce(question):
         all_extractions.extend(extractions)
         all_sources.extend(sources)
 
-        # 续取规则：这一轮"翻过前 CANDIDATE_K 个还没停"(examined > K) → 货多，再加深一轮；
-        # 早早就停(examined ≤ K) → 收工。
+        # Keep-going rule: if this round "paged past the first CANDIDATE_K without stopping"
+        # (examined > K) → lots of hits, deepen by another round; if it stopped early
+        # (examined ≤ K) → we're done.
         if examined <= config.CANDIDATE_K:
             break
-        print(f"[Round {round_idx} 翻过 {config.CANDIDATE_K} 仍高产(examined={examined}) → 再取下一轮]")
+        print(f"[Round {round_idx} paged past {config.CANDIDATE_K} still productive (examined={examined}) → fetching next round]")
 
     if not all_extractions:
         return "No relevant information found.", []
@@ -140,15 +144,19 @@ def map_reduce(question):
 
 
 def condense_question(question, history):
-    """把问题（任何语言）规整成一个自足的【英文】问题——供检索用。
+    """Rewrite the question (in any language) into a standalone *English* question -- for retrieval.
 
-    一次 LLM 调用同时干三件事：
-    1. 翻译成英文（语料是英文；BM25 只认字面，同语言才匹配得上，否则半条腿废掉）；
-    2. 用对话历史解掉指代（"它/第二个" → 具体名称，指代对象常在上一轮回答里）；
-    3. 顺手修语音识别在基因名/术语上的错（靠上下文猜回）。
-    已是英文 且 无历史（无需解指代）时，直接返回、不调 LLM（省一次）。
+    One LLM call does three things at once:
+    1. Translate to English (the corpus is English; BM25 only matches literally, so it matches
+       only within the same language, otherwise half the retrieval is crippled);
+    2. Resolve references using the conversation history ("it / the second one" → the specific
+       name; the referent is usually in the previous answer);
+    3. Fix speech-recognition errors on gene names / technical terms along the way (guessing
+       back from context).
+    If it is already English *and* there is no history (no references to resolve), return it as-is
+    without calling the LLM (saving one call).
     """
-    if question.isascii() and not history:      # 已是英文、又没历史要解 → 原样，省一次 LLM
+    if question.isascii() and not history:      # already English and no history to resolve → as-is, save an LLM call
         return question
     hist = "(none)"
     if history:
@@ -157,7 +165,7 @@ def condense_question(question, history):
             who = "User" if m["role"] == "user" else "Assistant"
             content = m["content"]
             if m["role"] == "assistant" and len(content) > 500:
-                content = content[:500] + " …"      # 回答可能很长 → 截断省 token（够解指代即可）
+                content = content[:500] + " …"      # answers can be long → truncate to save tokens (enough to resolve references)
             lines.append(f"{who}: {content}")
         hist = "\n".join(lines)
     prompt = CONDENSE_PROMPT_TMPL.format(history=hist, question=question)
@@ -169,28 +177,29 @@ def main():
     history = []
     while True:
         try:
-            question = input("\nQuestion (或输入 v 语音提问): ")
+            question = input("\nQuestion (or type v for a voice question): ")
         except (EOFError, KeyboardInterrupt):
             print("\nBye.")
             break
 
         if question.lower() in ["exit", "quit"]:
             break
-        if question.strip().lower() in ("v", "voice"):     # 语音提问：录音 → Whisper 转文字
+        if question.strip().lower() in ("v", "voice"):     # voice question: record → Whisper transcription
             try:
                 import voice
                 question = voice.listen()
-                print(f"🗣  你说: {question}")
+                print(f"🗣  You said: {question}")
             except Exception as e:
-                print(f"语音不可用（需 Apple Silicon + mlx-whisper）: {e}")
+                print(f"Voice unavailable (needs Apple Silicon + mlx-whisper): {e}")
                 continue
         if not question.strip():
             continue
 
-        # 多轮：先把带指代的追问改写成自足问题，再检索作答（第一问 history 空→原样）
+        # Multi-turn: first rewrite a follow-up (with references) into a standalone question,
+        # then retrieve and answer (on the first question history is empty → returned as-is).
         standalone = condense_question(question, history)
         if standalone != question:
-            print(f"[规整为英文检索问题 → {standalone}]")
+            print(f"[Condensed into English search query → {standalone}]")
         answer, sources = map_reduce(standalone)
         if not sources:
             print("\nNo relevant documents found.")

@@ -18,7 +18,7 @@ import loaders
 logger = logging.getLogger(__name__)
 
 # ----------------------------
-# Chunker（模块级：build_chunks 要用它）
+# Chunker (module-level: build_chunks needs it)
 # ----------------------------
 
 splitter = RecursiveCharacterTextSplitter(
@@ -29,8 +29,9 @@ splitter = RecursiveCharacterTextSplitter(
 )
 
 # ----------------------------
-# 格式分发表：扩展名 → 解析函数
-# 加新格式：在 loaders 实现 parse_xxx，再在这里加一行即可，main() 不用动。
+# Format dispatch table: file extension → parser function.
+# To add a new format: implement parse_xxx in loaders, then add one line here;
+# main() does not change.
 # ----------------------------
 
 PARSERS = {
@@ -45,16 +46,16 @@ PARSERS = {
 
 
 # ════════════════════════════════════════════════════════════
-#  主入口
+#  Main entry point
 # ════════════════════════════════════════════════════════════
 
 def main():
-    """扫描 data/ → 逐文件解析 → 切块 → 嵌入 → 建 FAISS 索引 → 存盘。"""
+    """Scan data/ → parse each file → chunk → embed → build FAISS index → save to disk."""
     DB_DIR.mkdir(exist_ok=True)
 
-    logger.info(f"Embedder backend: {embedder.backend()}")   # 触发加载 + 打印 mlx/st
+    logger.info(f"Embedder backend: {embedder.backend()}")   # triggers load + prints mlx/st
 
-    # 载入已有索引 / 元数据（支持断点续传）
+    # Load an existing index / metadata (supports resuming an interrupted run).
     index_path    = DB_DIR / "index.faiss"
     metadata_path = DB_DIR / "metadata.json"
     if index_path.exists() and metadata_path.exists():
@@ -76,9 +77,10 @@ def main():
     for file_path in files:
         parser = PARSERS.get(file_path.suffix.lower())
         if parser is None:
-            # 有真实后缀、且非隐藏文件，才提示（.DS_Store / 隐藏文件不刷屏）
+            # Only warn for files with a real extension that are not hidden
+            # (so .DS_Store / hidden files don't spam the log).
             if file_path.suffix and not file_path.name.startswith("."):
-                logger.info(f"跳过不支持的格式: {file_path.name}")
+                logger.info(f"Skipping unsupported format: {file_path.name}")
             continue
 
         if file_path.name in processed_papers:
@@ -99,8 +101,10 @@ def main():
 
         # ── Embed ────────────────────────────────────────────
         logger.info(f"  Embedding {len(paper_chunks)} chunks...")
-        # 用纯正文嵌入：保持向量对比度干净（标题/section 是主题词，盖在每段上会压低对比度）。
-        # "按文档/章节区分"交给 BM25 + rerank（它们带上标题也不会压对比度）。
+        # Embed the raw body text only: this keeps vector contrast clean (titles/section names
+        # are topic words; stamping them onto every chunk would flatten the contrast).
+        # "Distinguishing by document/section" is left to BM25 + rerank (they can carry the
+        # titles without hurting contrast).
         texts = [c["text"] for c in paper_chunks]
         vecs_list = []
         for i in range(0, len(texts), BATCH_SIZE):
@@ -124,23 +128,25 @@ def main():
 
 
 # ════════════════════════════════════════════════════════════
-#  main() 用到的零件
+#  Parts used by main()
 # ════════════════════════════════════════════════════════════
 
 def build_chunks(paper, elements):
-    """elements → 最终 chunks。
+    """elements → final chunks.
 
-    table / figure 型是成品，原样保留；text 型先合并再按 chunk_size 切块，
-    并用字符偏移把每个 chunk 回填到它所属的 page / section。
-    最后给每个 chunk 打上 doc_id / chunk_id（稳定身份，便于引用、去重、以后增量更新）。
+    table / figure elements are finished products, kept as-is; text elements are first
+    concatenated and then split by chunk_size, using character offsets to map each chunk
+    back to the page / section it came from.
+    Finally, each chunk gets a doc_id / chunk_id (stable identity, handy for citing,
+    deduplicating, and future incremental updates).
     """
-    doc_id = hashlib.md5(paper.encode("utf-8")).hexdigest()[:10]   # 文档ID = 文件名哈希（紧凑稳定）
+    doc_id = hashlib.md5(paper.encode("utf-8")).hexdigest()[:10]   # doc id = hash of filename (compact & stable)
     chunks = []
     text_stream = []
     for el in elements:
         if el["type"] == "text":
             text_stream.append((el["page"], el["section"], el["text"]))
-        else:  # table / figure：成品，直接带上来源文件名保留
+        else:  # table / figure: finished product, keep as-is with the source filename attached
             chunks.append({"paper": paper, **el})
 
     if text_stream:

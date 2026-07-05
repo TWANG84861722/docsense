@@ -13,7 +13,7 @@ _GENE_LIKE = re.compile(r'^[A-Z][A-Za-z0-9\-]+$')
 
 _alias_to_canonical: dict[str, str] = {}
 _canonical_to_all: dict[str, frozenset[str]] = {}
-_load_failed = False   # 缓存缺失且 mygene/联网不可用时置 True，之后直接跳过、不再重试
+_load_failed = False   # set True when the cache is missing and mygene/network is unavailable; afterwards just skip, don't retry
 
 
 def _build_cache():
@@ -83,10 +83,11 @@ def _ensure_loaded():
     try:
         _load()
     except Exception as e:
-        _load_failed = True    # 建/读缓存失败 → 标记，避免每次查询重试
+        _load_failed = True    # building/reading the cache failed → mark it, to avoid retrying on every query
         logger.warning(
-            f"基因别名扩展不可用，已跳过（检索照常，只是不扩展基因同义词）。"
-            f"原因: {e}。想启用：`pip install mygene`（首次会联网建缓存到 {CACHE_FILE}）。"
+            f"Gene-alias expansion unavailable, skipped (retrieval proceeds as usual, just without "
+            f"gene-synonym expansion). Reason: {e}. To enable: `pip install mygene` (the first run "
+            f"builds the cache online at {CACHE_FILE})."
         )
 
 

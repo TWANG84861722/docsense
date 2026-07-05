@@ -1,14 +1,17 @@
-"""手机问答网页服务（局域网版）。
+"""Phone Q&A web service (LAN edition).
 
-在 Mac 上跑：  python server.py
-然后手机(连同一 WiFi)浏览器打开启动时打印的那个 http://<Mac的IP>:8000
+Run it on the Mac:  python server.py
+Then, from a phone (on the same WiFi), open the http://<Mac's IP>:8000 that is printed on startup.
 
-- "大脑"(嵌入/重排/索引/论文)都在 Mac，手机只是个瘦客户端(输入框+答案区)。
-- 复用 chat.py 里已有的 condense_question + map_reduce，不重复造检索逻辑。
-- 手机上"说话提问"直接用输入法自带的语音输入(中文识别比桌面 Whisper 好)，无需额外代码。
-- 只监听局域网、无鉴权 —— 仅限家里可信 WiFi 使用；别把 8000 端口暴露到公网。
+- The "brain" (embedding/reranking/index/papers) all lives on the Mac; the phone is just a thin
+  client (an input box + an answer area).
+- Reuses chat.py's existing condense_question + map_reduce; no duplicate retrieval logic.
+- "Speaking a question" on the phone uses the keyboard's built-in dictation (its recognition is
+  better than desktop Whisper), so no extra code is needed.
+- Listens on the LAN only, with no authentication -- for use on a trusted home WiFi only; do not
+  expose port 8000 to the public internet.
 
-依赖(可选)：  pip install fastapi uvicorn
+Dependencies (optional):  pip install fastapi uvicorn
 """
 import socket
 import logging
@@ -28,13 +31,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 app = FastAPI()
 
-# 单用户个人工具：服务端保存一份全局对话历史(和终端 REPL 行为一致)。
+# Single-user personal tool: the server keeps one global conversation history (matching the
+# terminal REPL's behavior).
 _history = []
 
-# 后台任务表：一次问答很慢(可能一分钟+)，若让手机一直挂着等，iOS fetch ~60s 会超时断掉。
-# 所以改成：提问 → 立刻返回 job_id → 手机每隔几秒轮询 /result。每次轮询都是瞬时返回，不会超时。
+# Background job table: one Q&A is slow (possibly a minute+); if the phone just hangs waiting,
+# iOS fetch times out and drops the connection at ~60s. So instead: ask → return a job_id
+# immediately → the phone polls /result every few seconds. Each poll returns instantly and never
+# times out.
 _jobs = {}                 # job_id -> {status, answer, sources, standalone, error, started}
-_job_lock = threading.Lock()   # 模型/检索不保证线程安全 → 同一时刻只跑一个任务
+_job_lock = threading.Lock()   # models/retrieval aren't guaranteed thread-safe → run only one job at a time
 
 
 class Ask(BaseModel):
@@ -42,10 +48,10 @@ class Ask(BaseModel):
 
 
 def _lan_ip():
-    """取本机局域网 IP(用于打印手机该访问的地址)。"""
+    """Get this machine's LAN IP (to print the address the phone should visit)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))      # 不真的发包，只为让系统选出出口网卡的 IP
+        s.connect(("8.8.8.8", 80))      # doesn't actually send a packet; just lets the OS pick the outbound interface's IP
         return s.getsockname()[0]
     except Exception:
         return "127.0.0.1"
@@ -54,7 +60,7 @@ def _lan_ip():
 
 
 PAGE = """<!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -125,21 +131,21 @@ async function ask() {
   const btn = document.getElementById('ask');
   const ans = document.getElementById('answer');
   btn.disabled = true;
-  document.getElementById('asked').textContent = 'Q: ' + q;   // 问题留在答案上方，问完不消失
+  document.getElementById('asked').textContent = 'Q: ' + q;   // keep the question above the answer; it stays after asking
   document.getElementById('rewrite').textContent = '';
   document.getElementById('sources').innerHTML = '';
   ans.innerHTML = '<span class="spin">🤔 Searching & answering…</span>';
   try {
-    // 1) 提交任务，立刻拿到 job_id（这一步很快，不会超时）
+    // 1) Submit the job and get a job_id immediately (this step is fast and won't time out).
     const r = await fetch('/ask', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({question: q})
     });
     const j = await r.json();
     if (j.error || !j.job_id) { ans.textContent = 'Error: ' + (j.error || 'no job id'); return; }
-    // 2) 每隔 N 毫秒轮询一次，直到 done/error（每次轮询都是瞬时返回，永不超时）
+    // 2) Poll every N milliseconds until done/error (each poll returns instantly, never times out).
     while (true) {
-      await sleep(3000);       // 轮询间隔（毫秒）：3000 = 每 3 秒问一次
+      await sleep(3000);       // poll interval (ms): 3000 = ask once every 3 seconds
       const rr = await fetch('/result/' + j.job_id);
       const d = await rr.json();
       if (d.status === 'running') {
@@ -171,13 +177,13 @@ async function reset() {
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    # no-store：让手机浏览器每次都拿最新页面，免得改了代码手机还跑旧缓存
+    # no-store: makes the phone browser fetch the latest page every time, so a code change isn't masked by an old cached page
     return HTMLResponse(PAGE, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/favicon.ico")
 def favicon():
-    return Response(status_code=204)      # 浏览器要小图标；给个空响应，省得日志刷 404
+    return Response(status_code=204)      # the browser asks for a favicon; return an empty response so the log isn't spammed with 404s
 
 
 @app.post("/reset")
@@ -187,11 +193,11 @@ def reset():
 
 
 def _run_job(job_id, question):
-    """后台线程：真正的耗时活(condense + map_reduce)，结果写回 _jobs[job_id]。"""
-    with _job_lock:                       # 一次只跑一个：模型/检索非线程安全
+    """Background thread: the actual slow work (condense + map_reduce); the result is written back to _jobs[job_id]."""
+    with _job_lock:                       # run only one at a time: models/retrieval are not thread-safe
         try:
             standalone = chat.condense_question(question, _history)
-            logging.info("收到问题: %r  →  规整为英文: %r", question, standalone)
+            logging.info("Received question: %r  →  condensed to English: %r", question, standalone)
             answer, sources = chat.map_reduce(standalone)
 
             _history.append({"role": "user", "content": question})
@@ -221,7 +227,7 @@ def _run_job(job_id, question):
 
 @app.post("/ask")
 def ask(req: Ask):
-    """立刻返回 job_id；活儿丢到后台线程，手机去轮询 /result/<job_id>。"""
+    """Return a job_id immediately; the work is handed to a background thread, and the phone polls /result/<job_id>."""
     question = req.question.strip()
     if not question:
         return JSONResponse({"error": "empty question"})
@@ -239,7 +245,7 @@ def result(job_id: str):
     out = {"status": job["status"], "elapsed": round(time.time() - job["started"])}
     if job["status"] == "done":
         out.update(answer=job["answer"], standalone=job["standalone"], sources=job["sources"])
-        _jobs.pop(job_id, None)           # 取走即清，别攒内存
+        _jobs.pop(job_id, None)           # cleared once fetched, so we don't accumulate memory
     elif job["status"] == "error":
         out["error"] = job.get("error", "unknown")
         _jobs.pop(job_id, None)
@@ -249,8 +255,8 @@ def result(job_id: str):
 if __name__ == "__main__":
     ip = _lan_ip()
     print("\n" + "=" * 56)
-    print("  docsense 手机问答已启动。手机(连同一 WiFi)打开：")
+    print("  docsense phone Q&A is up. On your phone (same WiFi), open:")
     print(f"      http://{ip}:8000")
-    print("  停止：Ctrl-C")
+    print("  Stop: Ctrl-C")
     print("=" * 56 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,17 +1,18 @@
-"""Word(.docx) 解析。"""
+"""Word (.docx) parsing."""
 from .common import _rows_to_md, is_table_caption
 from .office_images import image_elements
 
 
 def _docx_table_md(table):
-    # 接收: 一个 docx Table 对象        输出: Markdown 表格字符串
-    # 做法: 把每行每格的 .text 取成二维列表 → 交给共用的 _rows_to_md 拼成表
+    # Takes: a docx Table object        Returns: a Markdown table string
+    # How: pull each row/cell's .text into a 2-D list → hand it to the shared _rows_to_md
     return _rows_to_md([[c.text for c in row.cells] for row in table.rows])
 
 
 def parse_docx(path):
-    """解析 Word(.docx) → elements。
-    段落→text（标题样式当 section）；表格→table（Markdown）；内嵌图片→VL 识图（image_elements）。
+    """Parse Word (.docx) → elements.
+    Paragraphs → text (heading styles become the section); tables → table (Markdown);
+    embedded images → VL image understanding (image_elements).
     """
     from docx import Document
     from docx.text.paragraph import Paragraph
@@ -19,47 +20,49 @@ def parse_docx(path):
     from docx.oxml.text.paragraph import CT_P
     from docx.oxml.table import CT_Tbl
 
-    doc = Document(str(path))   # 接收: 文件路径(字符串)   输出: 整个 Word 文档对象
-    elements = []               # 最终要返回的元件清单
-    section = ""                # 当前所在章节（遇到标题时更新）
-    buf = []                    # 暂存"还没归档的正文行"
+    doc = Document(str(path))   # Takes: a file path (string)   Returns: the whole Word document object
+    elements = []               # the element list we will return
+    section = ""                # the current section (updated when we hit a heading)
+    buf = []                    # buffers "body lines not yet filed"
 
     def flush():
-        # 接收: 无（用闭包里的 buf / section / elements）
-        # 输出: 无（副作用：把 buf 攒的文字凑成一个 text 元件放进 elements，然后清空 buf）
+        # Takes: nothing (uses buf / section / elements from the closure)
+        # Returns: nothing (side effect: turn buffered text into one text element in `elements`, then clear buf)
         text = " ".join(buf).strip()
         if text:
             elements.append({"page": 1, "section": section, "type": "text", "text": text})
         buf.clear()
 
     # doc.element.body.iterchildren()
-    #   接收: 无   输出: 逐个吐出 body 里的"子节点"(段落/表格的原始 XML)，按文档原始顺序
+    #   Takes: nothing   Returns: yields each "child node" in the body (a paragraph/table's raw XML)
+    #          in the document's original order
     for child in doc.element.body.iterchildren():
 
-        # isinstance(child, CT_P)  接收:(对象, 类型)  输出: True/False —— 这个子节点是不是"段落"
+        # isinstance(child, CT_P)  Takes: (object, type)  Returns: True/False -- is this child a "paragraph"
         if isinstance(child, CT_P):
-            para = Paragraph(child, doc)   # 接收:(段落XML节点, 所属文档)  输出: 好用的 Paragraph 对象
-            txt = para.text.strip()        # para.text → 段落纯文字(字符串); .strip() → 去首尾空白
-            if not txt:                    # 空段落 → 跳过
+            para = Paragraph(child, doc)   # Takes: (paragraph XML node, owning document)  Returns: a usable Paragraph object
+            txt = para.text.strip()        # para.text → paragraph plain text (string); .strip() → trim whitespace
+            if not txt:                    # empty paragraph → skip
                 continue
-            # para.style.name → 该段用的样式名(字符串，如 "Heading 1"/"Normal"); .lower() 转小写好比较
+            # para.style.name → the style name used (string, e.g. "Heading 1"/"Normal"); .lower() for easy comparison
             style = (para.style.name or "").lower() if para.style else ""
             if style.startswith("heading") or style == "title":
-                flush()                    # 先把上面攒的正文归档
-                section = txt              # 这段是标题 → 开启新 section
+                flush()                    # first file the body buffered above
+                section = txt              # this paragraph is a heading → start a new section
             else:
-                buf.append(txt)            # 普通正文 → 先攒进 buf，等下次 flush 时归档
+                buf.append(txt)            # ordinary body → buffer it, filed on the next flush
 
-        # isinstance(child, CT_Tbl) → 这个子节点是不是"表格"
+        # isinstance(child, CT_Tbl) → is this child a "table"
         elif isinstance(child, CT_Tbl):
-            # 表注通常在表「上方」：若 buf 末尾那段是 "Table N..."，取出来当表注，绑到这张表上
+            # A table caption is usually *above* the table: if buf's last line is "Table N...",
+            # pop it out to use as the caption and bind it to this table.
             caption = buf.pop() if (buf and is_table_caption(buf[-1])) else ""
-            flush()                                  # 其余正文归档
-            md = _docx_table_md(Table(child, doc))   # Table(...)→表格对象; _docx_table_md(...)→Markdown字符串
+            flush()                                  # file the remaining body
+            md = _docx_table_md(Table(child, doc))   # Table(...) → table object; _docx_table_md(...) → Markdown string
             if md:
-                text = f"{caption}\n{md}" if caption else md   # 有表注就拼到表格前面，和表同进一个 chunk
+                text = f"{caption}\n{md}" if caption else md   # if there's a caption, prepend it so it stays in the same chunk
                 elements.append({"page": 1, "section": section, "type": "table", "text": text})
 
-    flush()           # 循环结束，把最后攒的正文也归档
-    elements.extend(image_elements(path, "Figure"))   # 内嵌图片 → VL 识图 → figure 元件
-    return elements   # 输出: 元件列表（text / table / figure）
+    flush()           # loop done: file the last buffered body too
+    elements.extend(image_elements(path, "Figure"))   # embedded images → VL understanding → figure elements
+    return elements   # Returns: the element list (text / table / figure)

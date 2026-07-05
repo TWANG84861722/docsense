@@ -1,12 +1,14 @@
-"""单元测试：全部 import【真实代码】来测（不在测试里复制逻辑）。
+"""Unit tests: everything imports the *real code* under test (no logic copied into the tests).
 
-核心原则：测试的意义是守护真代码。若在测试里复制一份逻辑来测，
-真代码改坏了测试却照样绿灯 = 假的安全感。所以一律 import 真的函数/正则。
+Core principle: the point of a test is to guard the real code. If you copy a piece of logic into
+the test to test it, then when the real code breaks the test still passes green = false sense of
+safety. So we always import the real functions/regexes.
 
-这些是"快单元测试"：不加载大模型、不联网，秒级跑完。
-（涉及 VL/嵌入/检索的端到端验证属于"慢集成测试"，成本高，另做/另放。）
+These are "fast unit tests": no big models loaded, no network, they run in seconds.
+(End-to-end verification involving VL/embedding/retrieval is a "slow integration test" -- costly,
+done/kept separately.)
 
-运行：  python test_rag.py       或      pytest
+Run:  python test_rag.py       or      pytest
 """
 import sys
 import unittest
@@ -26,35 +28,37 @@ class TestConfig(unittest.TestCase):
         self.assertGreater(BATCH_SIZE, 0)
 
     def test_model_paths_exist(self):
-        # 注：这是"环境检查"，依赖本机模型路径；换机器没下模型会失败（符合预期）。
+        # Note: this is an "environment check" that depends on local model paths; on another
+        # machine without the models downloaded it will fail (as expected).
         from config import EMBED_MODEL, RERANKER_MODEL
         self.assertTrue(Path(EMBED_MODEL).exists(), f"Embed model missing: {EMBED_MODEL}")
         self.assertTrue(Path(RERANKER_MODEL).exists(), f"Reranker missing: {RERANKER_MODEL}")
 
 
 class TestBboxOverlap(unittest.TestCase):
-    """测真实的 loaders.pdf.bbox_overlap。"""
+    """Tests the real loaders.pdf.bbox_overlap."""
 
     def test_separated(self):
         from loaders.pdf import bbox_overlap
-        self.assertFalse(bbox_overlap((0, 0, 10, 10), (20, 0, 30, 10)))    # 左右分开
-        self.assertFalse(bbox_overlap((0, 0, 10, 10), (0, 20, 10, 30)))    # 上下分开
+        self.assertFalse(bbox_overlap((0, 0, 10, 10), (20, 0, 30, 10)))    # separated left/right
+        self.assertFalse(bbox_overlap((0, 0, 10, 10), (0, 20, 10, 30)))    # separated top/bottom
 
     def test_overlap(self):
         from loaders.pdf import bbox_overlap
-        self.assertTrue(bbox_overlap((0, 0, 20, 20), (10, 10, 30, 30)))    # 部分重叠
-        self.assertTrue(bbox_overlap((0, 0, 100, 100), (10, 10, 20, 20)))  # 完全包含
+        self.assertTrue(bbox_overlap((0, 0, 20, 20), (10, 10, 30, 30)))    # partial overlap
+        self.assertTrue(bbox_overlap((0, 0, 100, 100), (10, 10, 20, 20)))  # fully contained
 
     def test_touching_edge_not_overlap(self):
         from loaders.pdf import bbox_overlap
-        self.assertFalse(bbox_overlap((0, 0, 10, 10), (10, 0, 20, 10)))    # 仅贴边不算重叠
+        self.assertFalse(bbox_overlap((0, 0, 10, 10), (10, 0, 20, 10)))    # merely touching edges is not overlap
 
 
 class TestTableToMarkdown(unittest.TestCase):
-    """测真实的 loaders.pdf.table_to_markdown。
+    """Tests the real loaders.pdf.table_to_markdown.
 
-    它接收一个"表对象"(需有 .extract() 返回二维列表)，所以用一个【假表 stub】喂给它——
-    这就是"测试替身"：既跑到了真函数，又不依赖真实 PDF。
+    It takes a "table object" (which must have .extract() returning a 2-D list), so we feed it a
+    *fake table stub* -- that's a "test double": it exercises the real function without depending
+    on a real PDF.
     """
 
     class _FakeTable:
@@ -79,7 +83,7 @@ class TestTableToMarkdown(unittest.TestCase):
 
 
 class TestSectionRE(unittest.TestCase):
-    """测真实的 loaders.pdf.SECTION_RE。"""
+    """Tests the real loaders.pdf.SECTION_RE."""
 
     def test_matches(self):
         from loaders.pdf import SECTION_RE
@@ -96,7 +100,7 @@ class TestSectionRE(unittest.TestCase):
 
 
 class TestFigureRE(unittest.TestCase):
-    """测真实的 loaders.pdf.FIGURE_RE。"""
+    """Tests the real loaders.pdf.FIGURE_RE."""
 
     def test_matches(self):
         from loaders.pdf import FIGURE_RE
@@ -113,12 +117,13 @@ class TestFigureRE(unittest.TestCase):
 
 
 class TestHGNC(unittest.TestCase):
-    """基因别名扩展。用 hgnc 真实的 CACHE_FILE 路径判断缓存在不在（不再猜目录）。"""
+    """Gene-alias expansion. Uses hgnc's real CACHE_FILE path to check whether the cache exists
+    (no more guessing directories)."""
 
     def setUp(self):
         from hgnc import CACHE_FILE
         if not CACHE_FILE.exists():
-            self.skipTest(f"基因缓存不存在({CACHE_FILE})——放好 gene_aliases.json 再测")
+            self.skipTest(f"Gene cache not found ({CACHE_FILE}) -- put gene_aliases.json in place first")
 
     def test_known_gene_expanded(self):
         from hgnc import expand_query

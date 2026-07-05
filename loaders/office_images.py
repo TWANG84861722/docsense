@@ -1,9 +1,11 @@
-"""Office 文件内嵌图片的统一识图（docx / pptx / xlsx 共用）。
+"""Unified image understanding for images embedded in Office files (shared by docx / pptx / xlsx).
 
-三种格式都是 zip，图片都放在压缩包的 media/ 文件夹（word/media、ppt/media、xl/media）。
-直接从 zip 读 media/ 最稳——能抓到"组合/占位符"里、用 shapes API 容易漏掉的图。
-代价：①丢了位置（不知第几页/段）；②会带上 logo/图标/签名等装饰图。
-对策：先按"字节大小 + 像素尺寸"过滤掉小装饰，再让 VL 兜底判定（回 DECORATIVE 就丢）。
+All three formats are zip archives, and their images live in the archive's media/ folder
+(word/media, ppt/media, xl/media). Reading media/ straight from the zip is the most robust
+approach -- it catches images inside "groups/placeholders" that the shapes API easily misses.
+Costs: (1) we lose position (which page/paragraph); (2) we also pick up decorations like logos,
+icons, signatures. Countermeasure: first filter out small decorations by "byte size + pixel
+dimensions", then let the VL make the final call (reply DECORATIVE → dropped).
 """
 import io
 import logging
@@ -13,11 +15,11 @@ import model_client
 
 logger = logging.getLogger(__name__)
 
-# VL 能收的位图格式（emf/wmf 等矢量格式收不了，跳过）
+# Raster formats the VL can accept (vector formats like emf/wmf can't be accepted → skip them)
 _RASTER = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
            "gif": "image/gif", "bmp": "image/bmp", "webp": "image/webp"}
-_MIN_PX = 130        # 任一边 < 130px → 多半是图标/装饰
-_MIN_BYTES = 3000    # < 3KB → 空图/占位
+_MIN_PX = 130        # any side < 130px → most likely an icon/decoration
+_MIN_BYTES = 3000    # < 3KB → blank/placeholder image
 
 _PROMPT = (
     "Describe this image from an office document thoroughly so it can be retrieved later. "
@@ -28,7 +30,7 @@ _PROMPT = (
 
 
 def _dimensions(data):
-    # 接收: 图片字节   输出: (宽, 高) 像素；读不出就 None
+    # Takes: image bytes   Returns: (width, height) in pixels; None if unreadable
     try:
         from PIL import Image
         with Image.open(io.BytesIO(data)) as im:
@@ -38,16 +40,16 @@ def _dimensions(data):
 
 
 def image_elements(path, label="Image", max_tokens=800):
-    """读 Office 文件(zip)里 media/ 的图片 → VL 描述 → figure 元件列表。
+    """Read images from media/ inside an Office file (zip) → VL description → list of figure elements.
 
-    接收: 文件路径、给图片起的 section 前缀
-    输出: figure 元件列表（已滤掉装饰图）
+    Takes: the file path, and a section prefix to name the images with
+    Returns: a list of figure elements (decorations already filtered out)
     """
     elements = []
     try:
         z = zipfile.ZipFile(path)
     except Exception as e:
-        logger.warning(f"打不开 {path}: {e}")
+        logger.warning(f"Could not open {path}: {e}")
         return elements
 
     n = 0
@@ -56,21 +58,21 @@ def image_elements(path, label="Image", max_tokens=800):
             continue
         ext = name.rsplit(".", 1)[-1].lower()
         mime = _RASTER.get(ext)
-        if not mime:                          # 矢量等格式 VL 收不了
+        if not mime:                          # vector etc. formats the VL can't accept
             continue
         data = z.read(name)
-        if len(data) < _MIN_BYTES:            # 太小 → 空图/占位
+        if len(data) < _MIN_BYTES:            # too small → blank/placeholder
             continue
         dims = _dimensions(data)
         if dims and (dims[0] < _MIN_PX or dims[1] < _MIN_PX):
-            continue                          # 任一边太小 → 图标/装饰
+            continue                          # any side too small → icon/decoration
         try:
             desc = model_client.describe_image(data, _PROMPT, max_tokens=max_tokens, mime=mime)
         except Exception as e:
-            logger.warning(f"识图失败 {name}: {e}")
+            logger.warning(f"Image understanding failed for {name}: {e}")
             continue
         if not desc or desc.strip().upper().startswith("DECORATIVE") or model_client.vl_found_nothing(desc):
-            continue                          # 装饰 / VL 说没看到图 → 丢
+            continue                          # decoration / VL says it sees no image → drop
         n += 1
         elements.append({"page": 1, "section": f"{label} {n}", "type": "figure", "text": desc})
     return elements

@@ -4,17 +4,19 @@ import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 读取项目根目录的 .env（DASHSCOPE_API_KEY / OPENAI_API_KEY 等），
-# 这样运行 ingest.py / chat.py 时无需手动 source。
+# Load the project-root .env (DASHSCOPE_API_KEY / OPENAI_API_KEY, etc.) so that
+# running ingest.py / chat.py never needs a manual `source`.
 load_dotenv()
 
 # ── Paths ──────────────────────────────────────────────────
 DATA_DIR = Path("data")
-# DB_DIR 在下面按 CHUNK_SIZE 自动命名（见 Ingestion 段）
+# DB_DIR is named automatically below based on CHUNK_SIZE (see the Ingestion section).
 
-# ── Local models（embedding + reranker；跨平台可移植）──
-# 解析优先级：环境变量 > 本机已存在的本地路径 > HuggingFace 模型ID(自动下载)。
-# → Mac 上继续用 ~/models 里的本地模型(不重下)；Windows/服务器上没本地路径 → 自动从 HF 下载。
+# ── Local models (embedding + reranker; portable across platforms) ──
+# Resolution priority: environment variable > an existing local path > HuggingFace
+# model id (auto-downloaded).
+# → On this Mac we keep using the local models under ~/models (no re-download);
+#   on Windows/a server there is no local path → they are pulled from HF automatically.
 def _resolve_model(env_name, local_default, hf_id):
     v = os.environ.get(env_name)
     if v:
@@ -24,26 +26,29 @@ def _resolve_model(env_name, local_default, hf_id):
 EMBED_MODEL    = _resolve_model("EMBED_MODEL",    "/Users/taowang/models/bge-m3",              "BAAI/bge-m3")
 RERANKER_MODEL = _resolve_model("RERANKER_MODEL", "/Users/taowang/models/bge-reranker-v2-m3", "BAAI/bge-reranker-v2-m3")
 
-# 嵌入后端：auto(Apple Silicon→MLX，其余→sentence-transformers/torch) | mlx | st。环境变量 EMBED_BACKEND 可覆盖。
+# Embedding backend: auto (Apple Silicon → MLX, everything else → sentence-transformers/torch)
+# | mlx | st. The EMBED_BACKEND environment variable overrides this.
 EMBED_BACKEND  = os.environ.get("EMBED_BACKEND", "auto")
 
-# ── LLM / VL provider（可切换）─────────────────────────────
-# 一键换模型：编辑 models.yaml 里的 active（openai/claude/gemini/qwen/local）。
-# 这里只负责把 yaml 读进来；具体调用在 model_client.py。
+# ── LLM / VL provider (swappable) ──────────────────────────
+# Switch models in one place: edit `active` in models.yaml (openai/claude/gemini/qwen/local).
+# Here we only read the yaml in; the actual calls live in model_client.py.
 MODELS = yaml.safe_load((Path(__file__).parent / "models.yaml").read_text(encoding="utf-8"))
 
 def _active(role: str) -> dict:
-    """返回某个角色（'chat' 或 'vl'）当前生效的 provider 配置。"""
+    """Return the provider config currently in effect for a role ('chat' or 'vl')."""
     override = MODELS.get("llm_override") if role == "chat" else MODELS.get("vl_override")
     name = override or MODELS["active"]
     return name, MODELS["providers"][name]
 
 def ocr_model() -> str:
-    """扫描页/表格“转录”用的 OCR 模型名。
+    """Name of the OCR model used to 'transcribe' scanned pages / tables.
 
-    当前 VL provider 若配了 ocr_model（如 qwen 的 qwen-vl-ocr）就用它；没配则回退到该
-    provider 的 vl_model —— 这样换到别的 provider（openai/claude…）不会因缺 ocr_model 报错，
-    “一键换 provider” 仍成立。图片“理解”（describe_figure）不走这里，仍用 vl_model。
+    If the current VL provider configured an ocr_model (e.g. qwen's qwen-vl-ocr) we use it;
+    otherwise we fall back to that provider's vl_model -- so switching to another provider
+    (openai/claude...) never errors out for a missing ocr_model, and "swap provider in one
+    place" still holds. Image *understanding* (describe_figure) does not go through here;
+    it still uses vl_model.
     """
     _name, spec = _active("vl")
     return spec.get("ocr_model") or spec["vl_model"]
@@ -53,12 +58,14 @@ CHUNK_SIZE    = 500
 CHUNK_OVERLAP = 150
 BATCH_SIZE    = 64
 
-# 索引文件夹按 chunk_size 自动分开：500→index_chunk500/  1000→index_chunk1000/
-# 只改 CHUNK_SIZE 就同时决定“切多大”和“存/读哪个索引”。vl_cache/ 不在这里，全版本共享。
+# The index folder is separated automatically by chunk_size: 500 → index_chunk500/,
+# 1000 → index_chunk1000/. Changing CHUNK_SIZE alone decides both "how big to split" and
+# "which index to read/write". vl_cache/ is not here -- it is shared across all versions.
 DB_DIR = Path(f"index_chunk{CHUNK_SIZE}")
 
 # ── Retrieval ───────────────────────────────────────────────
-CANDIDATE_K = 100      # 每轮每路(FAISS/BM25)各取多少 → 并集 rerank；也是"续取阈值"
+CANDIDATE_K = 100      # How many each route (FAISS/BM25) takes per round → union then rerank;
+                       # also the "keep going" threshold for fetching another round.
 
 # ── Chat ────────────────────────────────────────────────────
 MAX_HISTORY_TURNS = 10

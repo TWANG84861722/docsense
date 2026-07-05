@@ -1,12 +1,13 @@
-"""统一的模型调用层 —— 一键换 provider。
+"""Unified model-call layer -- switch provider in one place.
 
-所有云厂商（OpenAI / Claude / Gemini / Qwen）和本地 server 都走 OpenAI 兼容接口，
-所以这里只用 openai 这一个库。换 provider 只需改 models.yaml 的 active，
-本文件和上层代码（chat.py / ingest.py）都不用动。
+Every cloud vendor (OpenAI / Claude / Gemini / Qwen) and the local server speaks the
+OpenAI-compatible API, so this file uses the single `openai` library only. Switching provider
+means changing `active` in models.yaml; neither this file nor the callers (chat.py / ingest.py)
+need to change.
 
-对外只暴露两个函数：
-- chat(messages, max_tokens)      —— 文本对话（LLM）
-- describe_image(image_bytes, prompt, max_tokens) —— 识图（VL）
+It exposes two public functions:
+- chat(messages, max_tokens)                       -- text conversation (LLM)
+- describe_image(image_bytes, prompt, max_tokens)  -- image understanding (VL)
 """
 from __future__ import annotations
 
@@ -23,11 +24,13 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# ── VL 识图结果缓存 ─────────────────────────────────────────
-# 同一张图(+同一 prompt+模型)只调一次 VL，结果按"内容哈希"存盘。
-# 这样反复改 parse/切块/组装都不再重付 VL 钱（图片没变就命中）。
-# 放在 vl_cache/（不在 db/ 里 → "清空 db 重建索引"不会丢这份缓存）。
-# 注：prompt/模型 进了哈希 key —— 改了 prompt 或换了模型会自动 miss、重新识图。
+# ── VL image-description cache ──────────────────────────────
+# The same image (+ same prompt + model) calls the VL only once; the result is stored on disk
+# keyed by a "content hash". This means repeatedly reworking parse/chunking/assembly never
+# pays for VL again (unchanged image → cache hit).
+# Kept under vl_cache/ (not inside db/ → "wipe db and rebuild the index" does not lose this cache).
+# Note: the prompt/model are part of the hash key -- changing the prompt or switching the model
+# automatically misses and re-runs the VL.
 _VL_CACHE_DIR = Path("vl_cache")
 
 
@@ -51,26 +54,26 @@ def _vl_cache_put(key: str, text: str) -> None:
 
 @lru_cache(maxsize=8)
 def _client(provider_name: str) -> OpenAI:
-    """按 provider 名创建（并缓存）一个 OpenAI 兼容客户端。"""
+    """Create (and cache) an OpenAI-compatible client for a provider name."""
     spec = config.MODELS["providers"][provider_name]
     key_env = spec.get("api_key_env")
     api_key = os.environ.get(key_env) if key_env else None
     if key_env and not api_key:
         raise RuntimeError(
-            f"缺少 API key：请在 .env / 环境变量里设置 {key_env}（provider='{provider_name}'）"
+            f"Missing API key: please set {key_env} in .env / the environment (provider='{provider_name}')"
         )
     return OpenAI(base_url=spec["base_url"], api_key=api_key or "not-needed")
 
 
 def _resolve(role: str):
-    """返回 (provider名, 该provider配置, 该角色用的模型名)。role: 'chat' | 'vl'。"""
+    """Return (provider name, that provider's config, the model name for this role). role: 'chat' | 'vl'."""
     name, spec = config._active(role)
     model = spec["chat_model"] if role == "chat" else spec["vl_model"]
     return name, spec, model
 
 
 def chat(messages: list[dict], max_tokens: int = 800, model: str | None = None) -> str:
-    """文本对话。messages 用标准 OpenAI 格式：[{"role": "...", "content": "..."}]。"""
+    """Text conversation. `messages` uses the standard OpenAI format: [{"role": "...", "content": "..."}]."""
     name, _spec, default_model = _resolve("chat")
     resp = _client(name).chat.completions.create(
         model=model or default_model,
@@ -88,9 +91,10 @@ def _vl_call(
     max_tokens: int,
     mime: str,
 ) -> tuple[str, str]:
-    """发一次 VL 请求，返回 (文字, finish_reason)。
+    """Send one VL request, returning (text, finish_reason).
 
-    finish_reason == 'length' 表示这次是被 max_tokens 上限**切断**的（没写完）。
+    finish_reason == 'length' means this response was **cut off** by the max_tokens cap
+    (it did not finish writing).
     """
     b64 = base64.b64encode(image_bytes).decode()
     messages = [{
@@ -116,14 +120,18 @@ def describe_image(
     model: str | None = None,
     mime: str = "image/png",
 ) -> str:
-    """识图：把图片 + 提示发给当前 VL provider，返回描述文字。
+    """Image understanding: send image + prompt to the current VL provider, return description text.
 
-    - 磁盘缓存：同一张图(+同一 prompt+模型)只调一次 VL，之后直接取缓存。
-    - 截断处理：max_tokens 只是上限、按实际生成计费、模型写完自停 → **一次给足封顶(默认 4000)**。
-      正常内容(实测图~2000、满页表~3000)都能一次写完。万一 4000 还被切断(finish_reason=='length')，
-      视为异常页(内容超长/模型打转)——**大声告警、且不写缓存**(绝不把半截结果当好货存，下次会重试)。
-      不做"从低起步再重试"：按实付费下那是浪费(半截 token 白花 + 图片重发)，封顶一次到位更省。
-      → 这也是 VL 识图预算的【唯一一处】设定，pdf.py 等调用方都继承它。
+    - Disk cache: the same image (+ same prompt + model) calls the VL only once, then serves the cache.
+    - Truncation handling: max_tokens is only a cap, billing is by actual generation, and the model
+      stops on its own when done → **give a generous cap once (default 4000)**.
+      Normal content (measured: figures ~2000, full-page tables ~3000) finishes in one shot. If 4000
+      is still cut off (finish_reason == 'length'), treat it as an abnormal page (content too long /
+      the model looping) -- **warn loudly AND do not cache** (never store a half-finished result as if
+      it were good; the next run will retry).
+      No "start low then retry": under pay-per-use that is wasteful (the half-written tokens are burned
+      + the image is re-sent); a single generous cap is cheaper.
+      → This is also the *single place* the VL budget is set; callers like pdf.py all inherit it.
     """
     name, _spec, default_model = _resolve("vl")
     model_name = model or default_model
@@ -131,18 +139,19 @@ def describe_image(
     key = _vl_cache_key(image_bytes, prompt, model_name)
     cached = _vl_cache_get(key)
     if cached is not None:
-        return cached                       # 命中缓存 → 不调 VL
+        return cached                       # cache hit → do not call the VL
 
     result, reason = _vl_call(name, image_bytes, prompt, model_name, max_tokens, mime)
 
-    if reason == "length":                  # 封顶还被切断 → 异常页：告警、返回半截、但不缓存
+    if reason == "length":                  # capped yet still cut off → abnormal page: warn, return the partial, but don't cache
         logger.error(
-            f"VL 输出在 max_tokens={max_tokens} 被截断，疑似内容超长/模型打转 → 本次不缓存(下次重试)"
+            f"VL output truncated at max_tokens={max_tokens}, likely content too long / model looping "
+            f"→ not caching this one (will retry next time)"
         )
         return result
 
     if result:
-        _vl_cache_put(key, result)          # 只有【完整】结果才存盘 → 缓存里都是"已知好货"
+        _vl_cache_put(key, result)          # only *complete* results get saved → the cache holds "known-good" only
     return result
 
 
@@ -156,6 +165,7 @@ _VL_NOTHING = (
 
 
 def vl_found_nothing(text: str) -> bool:
-    """判断 VL 回答是不是"这张图里没图/没表"（区域取错时会这么回）。"""
+    """Decide whether the VL's answer means "no figure/no table in this image" (which it says
+    when the cropped region was picked wrong)."""
     t = (text or "").lower()[:200]
     return any(p in t for p in _VL_NOTHING)

@@ -1,40 +1,42 @@
-"""Excel(.xlsx/.xls) 和 CSV 解析（都是表格，用 pandas）。"""
+"""Excel (.xlsx/.xls) and CSV parsing (both are tables, handled with pandas)."""
 from .common import _rows_to_md
 from .office_images import image_elements
 
 
 def _df_to_md(df):
-    # 接收: 一个 pandas DataFrame（表格）   输出: Markdown 表格字符串
-    df = df.fillna("")                                          # NaN→""（NaN 是"真值"，_rows_to_md 的 or "" 挡不住，要先填）
-    rows = [list(df.columns)] + df.astype(str).values.tolist()  # 表头一行 + 数据各行（都转字符串），拼成二维列表
-    return _rows_to_md(rows)                                    # 交给共用函数拼成 Markdown
+    # Takes: a pandas DataFrame (a table)   Returns: a Markdown table string
+    df = df.fillna("")                                          # NaN→"" (NaN is a "real value", so _rows_to_md's `or ""` won't catch it; fill first)
+    rows = [list(df.columns)] + df.astype(str).values.tolist()  # header row + each data row (all as strings), into a 2-D list
+    return _rows_to_md(rows)                                    # hand to the shared helper to build Markdown
 
 
 def parse_xlsx(path):
-    """解析 Excel(.xlsx/.xls) → elements。每个 sheet → 一个 text 元件（Markdown 表格）。
+    """Parse Excel (.xlsx/.xls) → elements. Each sheet → one text element (a Markdown table).
 
-    用 text 型（而非 table 型）：数据表可能很大，留给下游切块，避免单个 chunk 超出嵌入长度。
-    注：纯数据表（数字为主）语义检索效果有限，更适合精确查询；此处仅做通用接入。
+    Uses a text element (not a table element) because data tables can be large; leaving it for
+    downstream chunking avoids a single chunk exceeding the embedding length.
+    Note: pure data tables (mostly numbers) have limited semantic-search value and suit exact
+    lookups better; this is just a generic ingest path.
     """
-    import pandas as pd                                  # 惰性 import
+    import pandas as pd                                  # lazy import
 
-    # pd.read_excel(..., sheet_name=None)  接收: 路径   输出: 字典 {sheet名: DataFrame}（None=读所有 sheet）
+    # pd.read_excel(..., sheet_name=None)  Takes: a path   Returns: a dict {sheet_name: DataFrame} (None = read all sheets)
     sheets = pd.read_excel(str(path), sheet_name=None)
     elements = []
-    # enumerate(sheets.items(), start=1)  输出: 逐个 (序号 i, (sheet名 name, 表 df))
+    # enumerate(sheets.items(), start=1)  Returns: each (index i, (sheet name, DataFrame df))
     for i, (name, df) in enumerate(sheets.items(), start=1):
-        md = _df_to_md(df)                               # 这个 sheet → Markdown 表
+        md = _df_to_md(df)                               # this sheet → a Markdown table
         if md:
-            # section = sheet 名（天然就是这张表的标题）
+            # section = the sheet name (a natural title for this table)
             elements.append({"page": i, "section": name, "type": "text", "text": md})
-    elements.extend(image_elements(path, "Sheet image"))   # 表里内嵌的图片 → VL 识图 → figure
+    elements.extend(image_elements(path, "Sheet image"))   # images embedded in the workbook → VL understanding → figure
     return elements
 
 
 def parse_csv(path):
-    """解析 CSV → 一个 text 元件（Markdown 表格，下游会切块）。"""
+    """Parse CSV → a single text element (a Markdown table; downstream will chunk it)."""
     import pandas as pd
 
-    df = pd.read_csv(str(path))                          # 接收: 路径   输出: 一个 DataFrame
-    md = _df_to_md(df)                                   # → Markdown 表
+    df = pd.read_csv(str(path))                          # Takes: a path   Returns: one DataFrame
+    md = _df_to_md(df)                                   # → a Markdown table
     return [{"page": 1, "section": "", "type": "text", "text": md}] if md else []

@@ -1,30 +1,34 @@
 # ═══════════════════════════════════════════════════════════
-#  requirements.txt —— 项目的直接依赖（顶层包）+ 钉死版本
-#  安装：  pip install -r requirements.txt
-#  "==" 表示精确锁版本（可复现）；想让它随手升级可改成 ">="，但复现性会下降。
-#  注：本地嵌入/重排模型(bge-m3 / bge-reranker) 是模型文件，不在这里，需另行下载。
+#  requirements.txt -- the project's direct (top-level) dependencies + pinned versions
+#  Install:  pip install -r requirements.txt
+#  "==" pins an exact version (reproducible); change to ">=" to let it upgrade freely,
+#  but reproducibility drops.
+#  Note: the local embedding/reranker models (bge-m3 / bge-reranker) are model files,
+#  not listed here -- download them separately.
 # ═══════════════════════════════════════════════════════════
 
-# 检索核心：向量库 + 数值
+# Retrieval core: vector store + numerics
 faiss-cpu==1.14.2
 numpy==2.4.6
 
-# 本地模型后端（跨平台）：
-#  sentence-transformers = 嵌入(bge-m3)+重排(bge-reranker) 的可移植后端(torch，有 CUDA 自动上 GPU)
-#  mlx-embeddings        = 嵌入在 Apple Silicon 上的原生加速；平台标记让它只在 Mac(arm64) 安装
+# Local model backends (cross-platform):
+#  sentence-transformers = portable backend for embedding (bge-m3) + reranking (bge-reranker)
+#                          (torch; auto-uses the GPU when CUDA is available)
+#  mlx-embeddings        = native acceleration for embedding on Apple Silicon; the platform
+#                          marker installs it only on Mac (arm64)
 sentence-transformers==5.5.1
 mlx-embeddings==0.1.0; platform_system == "Darwin" and platform_machine == "arm64"
 
-# 混合检索辅助：BM25
+# Hybrid-retrieval helper: BM25
 rank-bm25==0.2.2
 
-# LLM / VL 调用（各家都走 OpenAI 兼容接口，一个库够）
+# LLM / VL calls (every provider speaks the OpenAI-compatible API, so one library is enough)
 openai==2.44.0
 
-# 文本切块
+# Text chunking
 langchain-text-splitters==1.1.2
 
-# 解析：PDF + Office(docx/pptx/xlsx) + 图像尺寸
+# Parsing: PDF + Office (docx/pptx/xlsx) + image dimensions
 PyMuPDF==1.27.2.3
 python-docx==1.2.0
 python-pptx==1.0.2
@@ -32,19 +36,21 @@ pandas==3.0.3
 openpyxl==3.1.5
 pillow==12.2.0
 
-# 配置 / 密钥
+# Config / secrets
 python-dotenv==1.2.2
 PyYAML==6.0.3
 
-# 可选：基因别名扩展（hgnc.py）。不装则 expand_query 优雅跳过；
-# 装了首次会联网 MyGene 建缓存；已有 db/gene_aliases.json 时无需再装。
+# Optional: gene-alias expansion (hgnc.py). Without it, expand_query degrades gracefully;
+# with it, the first run reaches out to MyGene to build a cache; once db/gene_aliases.json
+# exists you no longer need it installed.
 # mygene==3.2.2
 
-# 可选：语音提问（voice.py，chat.py 里输入 v 触发）。
-# sounddevice 录音(跨平台) + mlx-whisper 本地转写(仅 Apple Silicon，首次下 Whisper 模型 ~1.6G)。
+# Optional: voice questions (voice.py, triggered by typing v in chat.py).
+# sounddevice for recording (cross-platform) + mlx-whisper for local transcription
+# (Apple Silicon only; first run downloads the Whisper model, ~1.6G).
 # sounddevice==0.5.5
 # mlx-whisper==0.4.3; platform_system == "Darwin" and platform_machine == "arm64"
 
-# 可选：手机问答网页服务（server.py，同一 WiFi 下手机浏览器访问）。
+# Optional: phone Q&A web service (server.py, reachable from a phone browser on the same WiFi).
 # fastapi==0.139.0
 # uvicorn==0.49.0

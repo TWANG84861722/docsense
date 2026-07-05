@@ -1,39 +1,40 @@
-"""跨格式共用的小工具。docx / pptx / excel / csv 等多个 parser 共用，避免重复（DRY）。"""
+"""Small helpers shared across formats. Reused by the docx / pptx / excel / csv parsers to
+avoid duplication (DRY)."""
 import re
 
-# 表格标题/注释正则：匹配以 "Table 1" / "Table 1:" / "Tab. 2" / "表 1" 开头的文字
-#   ^\s*            开头可有空格
-#   (?:Table|Tab\.?|表)  三种写法都认（Tab 后面的点可有可无）
-#   \s*\d+          后面跟编号
-#   [A-Za-z]?       容许 "Table 1A" 这种带字母的
+# Table caption/label regex: matches text starting with "Table 1" / "Table 1:" / "Tab. 2" / "表 1".
+#   ^\s*                 leading spaces allowed
+#   (?:Table|Tab\.?|表)  accepts all three spellings (the dot after "Tab" is optional)
+#   \s*\d+               followed by a number
+#   [A-Za-z]?            allows "Table 1A" with a trailing letter
 TABLE_RE = re.compile(r'^\s*(?:Table|Tab\.?|表)\s*\d+[A-Za-z]?\b', re.IGNORECASE)
 
 
 def is_table_caption(text):
-    # 接收: 一段文字(字符串)   输出: True/False —— 它是不是以 "Table N" / "表 N" 开头
-    # text or "" : 万一传进来 None，用空串兜底，免得 .match 报错
+    # Takes: a piece of text (string)   Returns: True/False -- does it start with "Table N" / "表 N"
+    # `text or ""`: guard against None so .match doesn't blow up
     return bool(TABLE_RE.match(text or ""))
 
 
 def table_label(text):
-    # 接收: 一段文字   输出: 表标签字符串（如 "Table 2"），不是表注则返回 None
-    # 用于"这张表抓没抓过"的去重
+    # Takes: a piece of text   Returns: the table label string (e.g. "Table 2"), or None if not a caption
+    # Used to deduplicate "have we already grabbed this table"
     m = TABLE_RE.match(text or "")
     return m.group(0).strip() if m else None
 
 
 def _rows_to_md(rows):
-    # 接收: 二维列表 rows（行的列表，每行又是格子的列表）
-    # 输出: 一个 Markdown 表格字符串
-    # 第1步：逐格清洗（None→""、换行→空格、去首尾空白），形状不变、还是二维
+    # Takes: a 2-D list `rows` (a list of rows, each row a list of cells)
+    # Returns: a single Markdown table string
+    # Step 1: clean each cell (None→"", newline→space, strip whitespace); shape unchanged, still 2-D
     rows = [[str(c or "").replace("\n", " ").strip() for c in r] for r in rows]
     if not rows:
         return ""
-    width = max(len(r) for r in rows)            # 最宽的行有几格（所有行要对齐到这个列数）
-    pad = lambda r: r + [""] * (width - len(r))  # 小函数：把某行补空格子，补齐到 width 列
-    # 表头行 + Markdown 必需的分隔线（| --- | --- | ...）
+    width = max(len(r) for r in rows)            # how many cells the widest row has (all rows align to this)
+    pad = lambda r: r + [""] * (width - len(r))  # tiny helper: pad a row with empty cells up to `width`
+    # Header row + the separator line Markdown requires (| --- | --- | ...)
     lines = ["| " + " | ".join(pad(rows[0])) + " |",
              "| " + " | ".join(["---"] * width) + " |"]
-    for r in rows[1:]:                           # 其余每行：补齐 → join 成 "| a | b | c |"
+    for r in rows[1:]:                           # remaining rows: pad → join into "| a | b | c |"
         lines.append("| " + " | ".join(pad(r)) + " |")
-    return "\n".join(lines)                       # 各行用换行连起来 → 完整的 Markdown 表
+    return "\n".join(lines)                       # join rows with newlines → the full Markdown table

@@ -33,9 +33,11 @@ if not metadata_path.exists():
 logger.info(f"Embedder backend: {embedder.backend()}")
 
 logger.info("Loading reranker...")
-# max_length=512：把每个 (query, doc) 对截断到 512 token。交叉编码器的标准做法，
-# 否则遇到超长 chunk(整页扫描/大图描述几千 token)，注意力矩阵 ~序列长² 会爆到几十 GiB、
-# 在 MPS/GPU 上直接 OOM（"Invalid buffer size"）。截断不影响排序质量。
+# max_length=512: truncate every (query, doc) pair to 512 tokens. Standard practice for a
+# cross-encoder -- otherwise a very long chunk (a full scanned page / a big figure description
+# of a few thousand tokens) blows the attention matrix (~ sequence_length²) up to tens of GiB
+# and OOMs straight away on MPS/GPU ("Invalid buffer size"). Truncation does not hurt ranking
+# quality.
 reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
 
 logger.info("Loading FAISS index...")
@@ -46,7 +48,7 @@ with open(metadata_path, "r", encoding="utf-8") as f:
 
 
 # ----------------------------
-# 小工具：文档标题 / 文本拼装 / 分词
+# Small helpers: document title / text assembly / tokenization
 # ----------------------------
 
 def _doc_title(paper):
@@ -54,19 +56,23 @@ def _doc_title(paper):
 
 
 def _tok(text):
-    """简单分词：小写 ASCII 词 + 单个中文字。
-    （英文/基因名按词；中文按单字切——BM25 够用，避免漏掉中文。想更精确可上 jieba。）"""
+    """Simple tokenizer: lowercase ASCII words + individual CJK characters.
+    (English / gene names split by word; CJK split per character -- good enough for BM25 and
+    avoids dropping CJK text. For higher precision on CJK, swap in jieba.)"""
     return re.findall(r"[a-z0-9]+|[一-鿿]", text.lower())
 
 
 def _bm25_text(c):
-    """BM25 索引用：标题 + section + 正文 → 这样能按"入职/离职"等标题词区分文档。
-    （IDF 会自动给常见词低权、罕见词高权，所以同质语料的标题词无害。）"""
+    """For the BM25 index: title + section + body → lets it distinguish documents by title
+    words (e.g. "onboarding" vs "offboarding").
+    (IDF automatically down-weights common words and up-weights rare ones, so title words in a
+    homogeneous corpus do no harm.)"""
     return f"{_doc_title(c['paper'])} {c.get('section', '')} {c['text']}"
 
 
 def _rerank_text(c):
-    """rerank 输入用：给正文带上「标题 + section」上下文，帮 cross-encoder 区分近乎相同的段。"""
+    """For the rerank input: prepend "title + section" context to the body, helping the
+    cross-encoder tell nearly identical passages apart."""
     sec = c.get("section", "")
     head = f"[{_doc_title(c['paper'])}]" + (f" [{sec}]" if sec else "")
     return f"{head}\n{c['text']}"
@@ -79,14 +85,15 @@ logger.info(f"Index ready — {index.ntotal} vectors, {len(metadata)} chunks")
 
 
 # ----------------------------
-# 混合检索：FAISS + BM25 → 完整并集 → rerank（逐轮加深）
+# Hybrid retrieval: FAISS + BM25 → full union → rerank (deepening round by round)
 # ----------------------------
 
-MAX_ROUNDS = 5   # 最多加深几轮（每轮两路各再取 CANDIDATE_K）。安全上限，防止无限翻页。
+MAX_ROUNDS = 5   # Max number of deepening rounds (each round takes another CANDIDATE_K from
+                 # both routes). A safety cap to prevent paging forever.
 
 
 def _ranked_indices(question, depth):
-    """算出 FAISS 和 BM25 各自的前 depth 名 chunk 下标（各按自己的相关度排序）。"""
+    """Compute FAISS's and BM25's top-`depth` chunk indices (each ordered by its own relevance)."""
     expanded = expand_query(question)
     qv = embedder.embed([expanded])
     faiss.normalize_L2(qv)
@@ -98,12 +105,15 @@ def _ranked_indices(question, depth):
 
 
 def retrieve_rounds(question, k=None):
-    """逐轮产出候选（生成器）。上层用 next() 决定要不要再加深一轮。
+    """Yield candidates one round at a time (a generator). The caller uses next() to decide
+    whether to deepen by another round.
 
-    第 r 轮 = FAISS[r*k:(r+1)*k] ∪ BM25[r*k:(r+1)*k] 的【完整并集】(去重，含跨轮去重)，
-    整批 rerank 后按相关度产出（最多 2*k 个/轮）。
-    不做 RRF 截断——两路各取的 k 个一个不扔，全交给 rerank 排序，这样 BM25(或 FAISS)
-    深处的相关 chunk 不会被"融合后只取前 K"挤掉。
+    Round r = the *full union* of FAISS[r*k:(r+1)*k] ∪ BM25[r*k:(r+1)*k] (deduplicated,
+    including across rounds), reranked as one batch and yielded by relevance (at most 2*k
+    per round).
+    No RRF truncation -- not one of the k items from either route is thrown away; they all go
+    to the reranker to be ordered, so a relevant chunk sitting deep in BM25 (or FAISS) is not
+    squeezed out by a "fuse then keep only top K" step.
     """
     if k is None:
         k = CANDIDATE_K
@@ -112,8 +122,8 @@ def retrieve_rounds(question, k=None):
     for r in range(MAX_ROUNDS):
         lo, hi = r * k, (r + 1) * k
         idxs = []
-        for i in faiss_ranked[lo:hi] + bm25_ranked[lo:hi]:   # 两路本段的并集
-            if i not in seen:                                 # 轮内 + 跨轮去重
+        for i in faiss_ranked[lo:hi] + bm25_ranked[lo:hi]:   # union of this slice from both routes
+            if i not in seen:                                 # dedup within-round + across-round
                 seen.add(i)
                 idxs.append(i)
         if not idxs:
